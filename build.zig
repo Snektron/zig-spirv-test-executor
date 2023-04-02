@@ -2,11 +2,14 @@ const std = @import("std");
 
 pub fn build(b: *std.build.Builder) void {
     const target = b.standardTargetOptions(.{});
-    const mode = b.standardReleaseOptions();
+    const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable("zig-spirv-test-cmd", "src/main.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
+    const exe = b.addExecutable(.{
+        .name = "zig-spirv-executor",
+        .root_source_file = .{ .path = "src/executor.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
     exe.linkLibC();
     exe.linkSystemLibraryName("OpenCL");
     exe.install();
@@ -20,15 +23,22 @@ pub fn build(b: *std.build.Builder) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const test_kernel = b.addObject("test_kernel.spv", "src/test_kernel.zig");
-    test_kernel.setTarget(.{
-        .cpu_arch = .spirv64,
-        .os_tag = .opencl,
+    const test_kernel = b.addTest(.{
+        .name = "test",
+        .root_source_file = .{ .path = "src/test_kernel.zig" },
+        .target = std.zig.CrossTarget.parse(.{
+            .arch_os_abi = "spirv64-opencl",
+            .cpu_features = "generic+Int64+Int16+Int8",
+        }) catch unreachable,
+        .optimize = optimize,
     });
-
-    const test_test_kernel = exe.run();
-    test_test_kernel.addArtifactArg(test_kernel);
+    test_kernel.setTestRunner("src/test_runner.zig");
+    // TODO: This should be fixed in Zig.
+    test_kernel.setExecCmd(&[_]?[]const u8{ "zig-out/bin/zig-spirv-executor", "-v", null });
+    test_kernel.step.dependOn(b.getInstallStep());
+    // TODO: This should be fixed for the SPIR-V backend.
+    test_kernel.bundle_compiler_rt = false;
 
     const test_step = b.step("test", "Run the test kernel");
-    test_step.dependOn(&test_test_kernel.step);
+    test_step.dependOn(&test_kernel.step);
 }
