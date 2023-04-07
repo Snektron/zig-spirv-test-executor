@@ -18,7 +18,8 @@ const spirv = struct {
 };
 
 pub const std_options = struct {
-    pub const log_level = .info;
+    pub const log_level = .debug;
+    pub const logFn = log;
 };
 
 var log_verbose: bool = false;
@@ -30,7 +31,7 @@ pub fn log(
     args: anytype,
 ) void {
     _ = scope;
-    if (@enumToInt(level) >= @enumToInt(std.log.Level.warn) or log_verbose) {
+    if (@enumToInt(level) <= @enumToInt(std.log.Level.info) or log_verbose) {
         const prefix = comptime level.asText();
         std.debug.print(prefix ++ ": " ++ format ++ "\n", args);
     }
@@ -102,7 +103,7 @@ fn parseArgs(arena: Allocator) !Options {
             \\`result` must be set to 1 if the test passes, or left 0 if the test fails.
             \\
             \\Options:
-            \\--program -p <platform>   OpenCL platform name to use. By default, uses the
+            \\--platform -p <platform>  OpenCL platform name to use. By default, uses the
             \\                          first platform that has any devices available.
             \\                          Note that the platform must support the
             \\                          'cl_khr_il_program' extension.
@@ -157,7 +158,7 @@ fn deviceSupportsSpirv(arena: Allocator, device: c.cl_device_id) !bool {
 
         // TODO: Minimum version?
         if (std.mem.eql(u8, name, "SPIR-V")) {
-            std.log.info("Support for SPIR-V version {}.{}.{} detected", .{
+            std.log.debug("Support for SPIR-V version {}.{}.{} detected", .{
                 c.CL_VERSION_MAJOR(il.version),
                 c.CL_VERSION_MINOR(il.version),
                 c.CL_VERSION_PATCH(il.version),
@@ -214,7 +215,7 @@ fn pickPlatformAndDevice(
 ) !void {
     var num_platforms: c.cl_uint = undefined;
     try checkCl(c.clGetPlatformIDs(0, null, &num_platforms));
-    std.log.info("{} platform(s) available", .{num_platforms});
+    std.log.debug("{} platform(s) available", .{num_platforms});
 
     if (num_platforms == 0) {
         fail("no opencl platform available", .{});
@@ -234,7 +235,7 @@ fn pickPlatformAndDevice(
             fail("no such opencl platform '{s}'", .{platform_query});
         };
 
-        std.log.info("using platform '{s}'", .{platform_name});
+        std.log.debug("using platform '{s}'", .{platform_name});
 
         device.* = pickDevice(arena, platform.*, options.device) catch |err| switch (err) {
             error.NoDevices => fail("no opencl devices available for platform", .{}),
@@ -252,7 +253,7 @@ fn pickPlatformAndDevice(
             };
 
             platform.* = platform_id;
-            std.log.info("using platform '{s}'", .{try platformName(arena, platform_id)});
+            std.log.debug("using platform '{s}'", .{try platformName(arena, platform_id)});
             break;
         } else {
             fail("no such opencl device '{s}'", .{device_query});
@@ -265,17 +266,17 @@ fn pickPlatformAndDevice(
                 else => return err,
             };
             platform.* = platform_id;
-            std.log.info("using platform '{s}'", .{try platformName(arena, platform_id)});
+            std.log.debug("using platform '{s}'", .{try platformName(arena, platform_id)});
             break;
         } else {
             fail("no opencl platform that has any devices which support spir-v ingestion", .{});
         }
     }
 
-    std.log.info("using device '{s}'", .{try deviceName(arena, device.*)});
+    std.log.debug("using device '{s}'", .{try deviceName(arena, device.*)});
 }
 
-pub fn main() !void {
+pub fn main() !u8 {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_instance.deinit();
     const arena = arena_instance.allocator();
@@ -285,7 +286,7 @@ pub fn main() !void {
         log_verbose = true;
     }
 
-    std.log.info("loading spir-v module '{s}'", .{options.module});
+    std.log.debug("loading spir-v module '{s}'", .{options.module});
 
     const module_bytes = std.fs.cwd().readFileAllocOptions(
         arena,
@@ -336,11 +337,11 @@ pub fn main() !void {
         try entry_points.append(name_ptr[0 .. name.len :0]);
     }
 
-    std.log.info("module has {} entry point(s)", .{entry_points.items.len});
+    std.log.debug("module has {} entry point(s)", .{entry_points.items.len});
 
     if (entry_points.items.len == 0) {
         // Nothing to test.
-        return;
+        return 0;
     }
 
     var platform: c.cl_platform_id = undefined;
@@ -373,6 +374,7 @@ pub fn main() !void {
     try checkCl(status);
     defer _ = c.clReleaseProgram(program);
 
+    std.log.debug("building program", .{});
     status = c.clBuildProgram(program, 1, &device, null, null, null);
     if (status == c.CL_BUILD_PROGRAM_FAILURE) {
         var build_log_size: usize = undefined;
@@ -397,15 +399,33 @@ pub fn main() !void {
     }
     try checkCl(status);
 
+    const buf = c.clCreateBuffer(
+        context,
+        c.CL_MEM_READ_WRITE,
+        @sizeOf(u16),
+        null,
+        &status,
+    );
+    try checkCl(status);
+
+    var fails: usize = 0;
     for (entry_points.items) |name| {
-        std.log.info("running test for kernel '{s}'", .{name});
+        std.log.info("test '{s}'", .{name});
         const kernel = c.clCreateKernel(program, name.ptr, &status);
         try checkCl(status);
         defer _= c.clReleaseKernel(kernel);
 
-        // TODO: Pass global result buffer.
+        var nargs: c.cl_uint = undefined;
+        try checkCl(c.clGetKernelInfo(kernel, c.CL_KERNEL_NUM_ARGS, @sizeOf(c.cl_uint), &nargs, null));
 
-        var kernel_completed_event: c.cl_event = undefined;
+        try checkCl(c.clSetKernelArg(
+            kernel,
+            0,
+            @sizeOf(c.cl_mem),
+            @ptrCast(*const anyopaque, &buf),
+        ));
+
+        var kernel_completed_event: [1]c.cl_event = undefined;
         const global_work_size: usize = 1;
         const local_work_size: usize = 1;
         try checkCl(c.clEnqueueNDRangeKernel(
@@ -417,15 +437,40 @@ pub fn main() !void {
             &local_work_size,
             0,
             null,
-            &kernel_completed_event,
+            &kernel_completed_event[0],
         ));
 
-        try checkCl(c.clWaitForEvents(1, &kernel_completed_event));
+        var result: u16 = undefined;
+        try checkCl(c.clEnqueueReadBuffer(
+            queue,
+            buf,
+            c.CL_TRUE,
+            0,
+            @sizeOf(u16),
+            &result,
+            1,
+            &kernel_completed_event,
+            null,
+        ));
+
+        if (result == 0) {
+            std.log.info(".. ok", .{});
+        } else {
+            std.log.err(".. failed (error {})", .{ result });
+            fails += 1;
+        }
 
         var start: c.cl_ulong = undefined;
         var stop: c.cl_ulong = undefined;
-        _ = c.clGetEventProfilingInfo(kernel_completed_event, c.CL_PROFILING_COMMAND_START, @sizeOf(c.cl_ulong), &start, null);
-        _ = c.clGetEventProfilingInfo(kernel_completed_event, c.CL_PROFILING_COMMAND_END, @sizeOf(c.cl_ulong), &stop, null);
-        std.log.info("kernel runtime: {}us", .{(stop - start) / std.time.ns_per_us});
+        _ = c.clGetEventProfilingInfo(kernel_completed_event[0], c.CL_PROFILING_COMMAND_START, @sizeOf(c.cl_ulong), &start, null);
+        _ = c.clGetEventProfilingInfo(kernel_completed_event[0], c.CL_PROFILING_COMMAND_END, @sizeOf(c.cl_ulong), &stop, null);
+        std.log.debug("kernel runtime: {}us", .{(stop - start) / std.time.ns_per_us});
     }
+
+    if (fails != 0) {
+        std.log.err("{} tests failed", .{fails});
+        return 1;
+    }
+
+    return 0;
 }

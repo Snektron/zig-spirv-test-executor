@@ -33,25 +33,67 @@
         "-Dvalgrind=disabled"
         "-Dlibunwind=disabled"
         "-Dlmsensors=disabled"
+        "-Db_ndebug=false"
+        "--buildtype=debug"
       ];
       # Dirty patch to make one of the nixos-upstream patches working.
-      patches = [ ./mesa.patch ] ++ (old.patches or [ ]);
+      patches = [ ./patches/mesa-meson-options.patch ] ++ (old.patches or [ ]);
     });
+
+    oclcpuexp-bin = pkgs.callPackage ({ stdenv, fetchurl, autoPatchelfHook, zlib, tbb_2021_8 }:
+    stdenv.mkDerivation {
+      pname = "oclcpuexp-bin";
+      version = "2023-WW13";
+
+      nativeBuildInputs = [ autoPatchelfHook ];
+
+      propagatedBuildInputs = [ zlib tbb_2021_8 ];
+
+      src = fetchurl {
+        url = "https://github.com/intel/llvm/releases/download/2023-WW13/oclcpuexp-2023.15.3.0.20_rel.tar.gz";
+        hash = "sha256-lMcijaFO3Dw0KHC+pYgBJ9TzCIpp16Xtfxo5COoPK9Y=";
+      };
+
+      sourceRoot = ".";
+
+      dontConfigure = true;
+      dontBuild = true;
+
+      installPhase = ''
+        mkdir -p $out/lib
+        mv x64/* $out/lib
+        mv clbltfnshared.rtl $out/lib/
+        chmod 644 $out/lib/*
+        chmod 755 $out/lib/*.so.*
+
+        mkdir -p $out/etc/OpenCL/vendors
+        echo $out/lib/libintelocl.so > $out/etc/OpenCL/vendors/intelocl64.icd
+      '';
+    }) {};
+
+    # Merge the ICD files from oclcpuexp and mesa
+    ocl-vendors = pkgs.runCommand "ocl-vendors" {} ''
+      mkdir -p $out/etc/OpenCL/vendors
+      cp ${mesa.opencl}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
+      cp ${oclcpuexp-bin}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
+    '';
   in {
-    packages.${system}.mesa = mesa;
+    packages.${system} = { inherit mesa oclcpuexp-bin; };
 
     devShells.${system}.default = pkgs.stdenv.mkDerivation {
       name = "zig-spirv";
 
       nativeBuildInputs = [
         mesa.opencl
+        oclcpuexp-bin
         pkgs.khronos-ocl-icd-loader
         pkgs.clinfo
         pkgs.opencl-headers
         pkgs.spirv-tools
+        pkgs.gdb
       ];
 
-      OCL_ICD_VENDORS = "${mesa.opencl}/etc/OpenCL/vendors";
+      OCL_ICD_VENDORS = "${ocl-vendors}/etc/OpenCL/vendors";
 
       LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.khronos-ocl-icd-loader ];
 
