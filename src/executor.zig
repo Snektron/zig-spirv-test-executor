@@ -527,29 +527,39 @@ pub fn main() !u8 {
     );
     try checkCl(status);
 
-    var fails: usize = 0;
+    var progress = std.Progress{};
+    const root_node = progress.start("Test", entry_points.items.len);
+
+    var ok_count: usize = 0;
+    var fail_count: usize = 0;
     for (entry_points.items) |name| {
-        std.log.info("test '{s}'", .{name});
+        var test_node = root_node.start(name, 0);
+        test_node.activate();
+        defer test_node.end();
+        progress.refresh();
 
         var runtime: c_ulong = undefined;
         const result = launchTestKernel(queue, program, buf, name, &runtime) catch |err| {
-            std.log.err("  opencl error: {s}", .{ @errorName(err) });
+            progress.log("FAIL (OpenCL error {s})\n", .{@errorName(err)});
             continue;
         };
 
         if (result == 0) {
-            std.log.info("  ok", .{});
+            ok_count += 1;
         } else {
-            std.log.err("  failed (error {})", .{ result });
-            fails += 1;
+            fail_count += 1;
+            progress.log("FAIL (error code {})\n", .{result});
         }
 
-        std.log.debug("  test runtime: {}us", .{runtime});
+        if (log_verbose) {
+            progress.log("runtime: {}us\n", .{runtime});
+        }
     }
 
-    if (fails != 0) {
-        std.log.err("{} test(s) failed", .{fails});
-        return 1;
+    if (ok_count == entry_points.items.len) {
+        std.debug.print("All {} tests passed.\n", .{ok_count});
+    } else {
+        std.debug.print("{} passed; {} failed.\n", .{ ok_count, fail_count });
     }
 
     return 0;
