@@ -12,9 +12,9 @@ const spirv = struct {
     // magic + version + generator + bound + schema
     const header_size = 5;
 
-    // We only really care about this instruction, so no need to pull in the entire spir-v spec here.
+    // We only really care about these instructions, so no need to pull in the entire spir-v spec here.
+    const OpSourceExtension = 4;
     const OpEntryPoint = 15;
-    const entrypoint_name_offset = 3;
 };
 
 pub const std_options = struct {
@@ -350,7 +350,7 @@ fn launchTestKernel(
     var status: c.cl_int = undefined;
     const kernel = c.clCreateKernel(program, name.ptr, &status);
     try checkCl(status);
-    defer _= c.clReleaseKernel(kernel);
+    defer _ = c.clReleaseKernel(kernel);
 
     try checkCl(c.clSetKernelArg(
         kernel,
@@ -433,28 +433,62 @@ pub fn main() !u8 {
     }
 
     // Collect all the entry points from the spir-v binary.
+    // Collect some information from the SPIR-V module:
+    // - Entry points (OpEntryPoint)
+    // - Error names (OpSourceExtension that starts with zig_errors:).
     var entry_points = std.ArrayList([:0]const u8).init(arena);
-    var i: usize = spirv.header_size;
-    while (i < module.len) {
-        const instruction_len = module[i] >> 16;
-        defer i += instruction_len;
+    var maybe_error_names: ?[]const u8 = null;
+    {
+        var i: usize = spirv.header_size;
+        while (i < module.len) {
+            const instruction_len = module[i] >> 16;
+            defer i += instruction_len;
 
-        const opcode = module[i] & 0xFFFF;
-        if (opcode != spirv.OpEntryPoint) {
-            // Dont care about this instruction.
-            continue;
+            const opcode = module[i] & 0xFFFF;
+            switch (opcode) {
+                spirv.OpSourceExtension => {
+                    // OpSourceExtension layout:
+                    // - opcode and length (1 word)
+                    // - extension name (string literal, variable) <-- we want this
+                    const extension_ptr = std.mem.sliceAsBytes(module[i + 1 ..]);
+                    const extension = std.mem.sliceTo(extension_ptr, 0);
+                    // Check if the extension has the secret zig-generated prefix.
+                    if (std.mem.startsWith(u8, extension, "zig_errors:")) {
+                        maybe_error_names = extension["zig_errors:".len..];
+                    }
+                },
+                spirv.OpEntryPoint => {
+                    // Entry point layout:
+                    // - opcode and length (1 word)
+                    // - execution model (1 word)
+                    // - function reference (1 word)
+                    // - name (string literal, variable) <-- we want this
+                    // - interface (variable)
+                    const name_ptr = std.mem.sliceAsBytes(module[i + 3 ..]);
+                    const name = std.mem.sliceTo(name_ptr, 0);
+                    try entry_points.append(name_ptr[0..name.len :0]);
+                },
+                else => {},
+            }
         }
-
-        // Entry point layout:
-        // - opcode and length (1 word)
-        // - execution model (1 word)
-        // - function reference (1 word)
-        // - name (string literal, variable) <-- we want this
-        // - interface (variable)
-        const name_ptr = std.mem.sliceAsBytes(module[i + spirv.entrypoint_name_offset ..]);
-        const name = std.mem.sliceTo(name_ptr, 0);
-        try entry_points.append(name_ptr[0 .. name.len :0]);
     }
+
+    const error_names = blk: {
+        const error_names = maybe_error_names orelse {
+            std.log.err("module does not have OpSourceExtension with Zig error codes", .{});
+            std.log.err("this does not look like a Zig test module", .{});
+            return 1;
+        };
+
+        var names = std.ArrayList([]const u8).init(arena);
+        var it = std.mem.split(u8, error_names, ":");
+        while (it.next()) |unescaped_name| {
+            // Zig error names are escaped here in URI-formatting. Unescape them so we can use them.
+            const name = try std.Uri.unescapeString(arena, unescaped_name);
+            try names.append(name);
+        }
+        break :blk names.items;
+    };
 
     std.log.debug("module has {} entry point(s)", .{entry_points.items.len});
 
@@ -532,6 +566,7 @@ pub fn main() !u8 {
 
     var ok_count: usize = 0;
     var fail_count: usize = 0;
+    var skip_count: usize = 0;
     for (entry_points.items) |name| {
         var test_node = root_node.start(name, 0);
         test_node.activate();
@@ -539,16 +574,21 @@ pub fn main() !u8 {
         progress.refresh();
 
         var runtime: c_ulong = undefined;
-        const result = launchTestKernel(queue, program, buf, name, &runtime) catch |err| {
-            progress.log("FAIL (OpenCL error {s})\n", .{@errorName(err)});
+        const error_code = launchTestKernel(queue, program, buf, name, &runtime) catch |err| {
+            progress.log("FAIL (OpenCL: {s})\n", .{@errorName(err)});
+            fail_count += 1;
             continue;
         };
 
-        if (result == 0) {
+        const error_name = error_names[error_code];
+        if (error_code == 0) {
             ok_count += 1;
+        } else if (std.mem.eql(u8, error_name, "SkipZigTest")) {
+            skip_count += 1;
+            progress.log("SKIP\n", .{});
         } else {
             fail_count += 1;
-            progress.log("FAIL (error code {})\n", .{result});
+            progress.log("FAIL ({s})\n", .{error_name});
         }
 
         if (log_verbose) {
@@ -559,7 +599,8 @@ pub fn main() !u8 {
     if (ok_count == entry_points.items.len) {
         std.debug.print("All {} tests passed.\n", .{ok_count});
     } else {
-        std.debug.print("{} passed; {} failed.\n", .{ ok_count, fail_count });
+        std.debug.print("{} passed; {} skipped; {} failed.\n", .{ ok_count, skip_count, fail_count });
+        return 1;
     }
 
     return 0;
