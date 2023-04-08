@@ -1,6 +1,9 @@
 const std = @import("std");
 
-// Note: Intel's CPU OpenCL seems to have some issues with certain test names
+export fn why(err: *addrspace(.global) u16) callconv(.Kernel) void {
+    err.* = 1;
+}
+
 test "basic" {
 
 }

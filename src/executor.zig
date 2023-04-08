@@ -43,11 +43,72 @@ fn fail(comptime fmt: []const u8, args: anytype) noreturn {
 }
 
 fn checkCl(status: c.cl_int) !void {
-    if (status != c.CL_SUCCESS) {
-        // TODO: Error names?
-        std.log.err("opencl returned error {}", .{status});
-        return error.ClError;
-    }
+    return switch (status) {
+        c.CL_SUCCESS => {},
+        c.CL_DEVICE_NOT_FOUND => error.DeviceNotFound,
+        c.CL_DEVICE_NOT_AVAILABLE => error.DeviceNotAvailable,
+        c.CL_COMPILER_NOT_AVAILABLE => error.CompilerNotAvailable,
+        c.CL_MEM_OBJECT_ALLOCATION_FAILURE => error.MemObjectAllocationFailure,
+        c.CL_OUT_OF_RESOURCES => error.OutOfResources,
+        c.CL_OUT_OF_HOST_MEMORY => error.OutOfHostMemory,
+        c.CL_PROFILING_INFO_NOT_AVAILABLE => error.ProfilingInfoNotAvailable,
+        c.CL_MEM_COPY_OVERLAP => error.MemCopyOverlap,
+        c.CL_IMAGE_FORMAT_MISMATCH => error.ImageFormatMismatch,
+        c.CL_IMAGE_FORMAT_NOT_SUPPORTED => error.ImageFormatNotSupported,
+        c.CL_BUILD_PROGRAM_FAILURE => error.BuildProgramFailure,
+        c.CL_MAP_FAILURE => error.MapFailure,
+        c.CL_MISALIGNED_SUB_BUFFER_OFFSET => error.MisalignedSubBufferOffset,
+        c.CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST => error.ExecStatusErrorForEventsInWaitList,
+        c.CL_COMPILE_PROGRAM_FAILURE => error.CompileProgramFailure,
+        c.CL_LINKER_NOT_AVAILABLE => error.LinkerNotAvailable,
+        c.CL_LINK_PROGRAM_FAILURE => error.LinkProgramFailure,
+        c.CL_DEVICE_PARTITION_FAILED => error.DevicePartitionFailed,
+        c.CL_KERNEL_ARG_INFO_NOT_AVAILABLE => error.KernelArgInfoNotAvailable,
+        c.CL_INVALID_VALUE => error.InvalidValue,
+        c.CL_INVALID_DEVICE_TYPE => error.InvalidDeviceType,
+        c.CL_INVALID_PLATFORM => error.InvalidPlatform,
+        c.CL_INVALID_DEVICE => error.InvalidDevice,
+        c.CL_INVALID_CONTEXT => error.InvalidContext,
+        c.CL_INVALID_QUEUE_PROPERTIES => error.InvalidQueueProperties,
+        c.CL_INVALID_COMMAND_QUEUE => error.InvalidCommandQueue,
+        c.CL_INVALID_HOST_PTR => error.InvalidHostPtr,
+        c.CL_INVALID_MEM_OBJECT => error.InvalidMemObject,
+        c.CL_INVALID_IMAGE_FORMAT_DESCRIPTOR => error.InvalidImageFormatDescriptor,
+        c.CL_INVALID_IMAGE_SIZE => error.InvalidImageSize,
+        c.CL_INVALID_SAMPLER => error.InvalidSampler,
+        c.CL_INVALID_BINARY => error.InvalidBinary,
+        c.CL_INVALID_BUILD_OPTIONS => error.InvalidBuildOptions,
+        c.CL_INVALID_PROGRAM => error.InvalidProgram,
+        c.CL_INVALID_PROGRAM_EXECUTABLE => error.InvalidProgramExecutable,
+        c.CL_INVALID_KERNEL_NAME => error.InvalidKernelName,
+        c.CL_INVALID_KERNEL_DEFINITION => error.InvalidKernelDefinition,
+        c.CL_INVALID_KERNEL => error.InvalidKernel,
+        c.CL_INVALID_ARG_INDEX => error.InvalidArgIndex,
+        c.CL_INVALID_ARG_VALUE => error.InvalidArgValue,
+        c.CL_INVALID_ARG_SIZE => error.InvalidArgSize,
+        c.CL_INVALID_KERNEL_ARGS => error.InvalidKernelArgs,
+        c.CL_INVALID_WORK_DIMENSION => error.InvalidWorkDimension,
+        c.CL_INVALID_WORK_GROUP_SIZE => error.InvalidWorkGroupSize,
+        c.CL_INVALID_WORK_ITEM_SIZE => error.InvalidWorkItemSize,
+        c.CL_INVALID_GLOBAL_OFFSET => error.InvalidGlobalOffset,
+        c.CL_INVALID_EVENT_WAIT_LIST => error.InvalidEventWaitList,
+        c.CL_INVALID_EVENT => error.InvalidEvent,
+        c.CL_INVALID_OPERATION => error.InvalidOperation,
+        c.CL_INVALID_GL_OBJECT => error.InvalidGlObject,
+        c.CL_INVALID_BUFFER_SIZE => error.InvalidBufferSize,
+        c.CL_INVALID_MIP_LEVEL => error.InvalidMipLevel,
+        c.CL_INVALID_GLOBAL_WORK_SIZE => error.InvalidGlobalWorkSize,
+        c.CL_INVALID_PROPERTY => error.InvalidProperty,
+        c.CL_INVALID_IMAGE_DESCRIPTOR => error.InvalidImageDescriptor,
+        c.CL_INVALID_COMPILER_OPTIONS => error.InvalidCompilerOptions,
+        c.CL_INVALID_LINKER_OPTIONS => error.InvalidLinkerOptions,
+        c.CL_INVALID_DEVICE_PARTITION_COUNT => error.InvalidDevicePartitionCount,
+        c.CL_INVALID_PIPE_SIZE => error.InvalidPipeSize,
+        c.CL_INVALID_DEVICE_QUEUE => error.InvalidDeviceQueue,
+        c.CL_INVALID_SPEC_ID => error.InvalidSpecId,
+        c.CL_MAX_SIZE_RESTRICTION_EXCEEDED => error.MaxSizeRestrictionExceeded,
+        else => error.Unkown,
+    };
 }
 
 const Options = struct {
@@ -276,6 +337,64 @@ fn pickPlatformAndDevice(
     std.log.debug("using device '{s}'", .{try deviceName(arena, device.*)});
 }
 
+fn launchTestKernel(
+    queue: c.cl_command_queue,
+    program: c.cl_program,
+    err_buf: c.cl_mem,
+    name: []const u8,
+    runtime: *c.cl_ulong,
+) !u16 {
+    var event: c.cl_event = null;
+    defer _ = c.clReleaseEvent(event);
+
+    var status: c.cl_int = undefined;
+    const kernel = c.clCreateKernel(program, name.ptr, &status);
+    try checkCl(status);
+    defer _= c.clReleaseKernel(kernel);
+
+    try checkCl(c.clSetKernelArg(
+        kernel,
+        0,
+        @sizeOf(c.cl_mem),
+        @ptrCast(*const anyopaque, &err_buf),
+    ));
+
+    const global_work_size: usize = 1;
+    const local_work_size: usize = 1;
+    try checkCl(c.clEnqueueNDRangeKernel(
+        queue,
+        kernel,
+        1,
+        null,
+        &global_work_size,
+        &local_work_size,
+        0,
+        null,
+        &event,
+    ));
+
+    var result: u16 = undefined;
+    try checkCl(c.clEnqueueReadBuffer(
+        queue,
+        err_buf,
+        c.CL_TRUE,
+        0,
+        @sizeOf(u16),
+        &result,
+        1,
+        @as(*[1]c.cl_event, &event),
+        null,
+    ));
+
+    var start: c.cl_ulong = undefined;
+    var stop: c.cl_ulong = undefined;
+    _ = c.clGetEventProfilingInfo(event, c.CL_PROFILING_COMMAND_START, @sizeOf(c.cl_ulong), &start, null);
+    _ = c.clGetEventProfilingInfo(event, c.CL_PROFILING_COMMAND_END, @sizeOf(c.cl_ulong), &stop, null);
+    runtime.* = (stop - start) / std.time.ns_per_us;
+
+    return result;
+}
+
 pub fn main() !u8 {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_instance.deinit();
@@ -411,64 +530,25 @@ pub fn main() !u8 {
     var fails: usize = 0;
     for (entry_points.items) |name| {
         std.log.info("test '{s}'", .{name});
-        const kernel = c.clCreateKernel(program, name.ptr, &status);
-        try checkCl(status);
-        defer _= c.clReleaseKernel(kernel);
 
-        var nargs: c.cl_uint = undefined;
-        try checkCl(c.clGetKernelInfo(kernel, c.CL_KERNEL_NUM_ARGS, @sizeOf(c.cl_uint), &nargs, null));
-
-        try checkCl(c.clSetKernelArg(
-            kernel,
-            0,
-            @sizeOf(c.cl_mem),
-            @ptrCast(*const anyopaque, &buf),
-        ));
-
-        var kernel_completed_event: [1]c.cl_event = undefined;
-        const global_work_size: usize = 1;
-        const local_work_size: usize = 1;
-        try checkCl(c.clEnqueueNDRangeKernel(
-            queue,
-            kernel,
-            1,
-            null,
-            &global_work_size,
-            &local_work_size,
-            0,
-            null,
-            &kernel_completed_event[0],
-        ));
-
-        var result: u16 = undefined;
-        try checkCl(c.clEnqueueReadBuffer(
-            queue,
-            buf,
-            c.CL_TRUE,
-            0,
-            @sizeOf(u16),
-            &result,
-            1,
-            &kernel_completed_event,
-            null,
-        ));
+        var runtime: c_ulong = undefined;
+        const result = launchTestKernel(queue, program, buf, name, &runtime) catch |err| {
+            std.log.err("  opencl error: {s}", .{ @errorName(err) });
+            continue;
+        };
 
         if (result == 0) {
-            std.log.info(".. ok", .{});
+            std.log.info("  ok", .{});
         } else {
-            std.log.err(".. failed (error {})", .{ result });
+            std.log.err("  failed (error {})", .{ result });
             fails += 1;
         }
 
-        var start: c.cl_ulong = undefined;
-        var stop: c.cl_ulong = undefined;
-        _ = c.clGetEventProfilingInfo(kernel_completed_event[0], c.CL_PROFILING_COMMAND_START, @sizeOf(c.cl_ulong), &start, null);
-        _ = c.clGetEventProfilingInfo(kernel_completed_event[0], c.CL_PROFILING_COMMAND_END, @sizeOf(c.cl_ulong), &stop, null);
-        std.log.debug("kernel runtime: {}us", .{(stop - start) / std.time.ns_per_us});
+        std.log.debug("  test runtime: {}us", .{runtime});
     }
 
     if (fails != 0) {
-        std.log.err("{} tests failed", .{fails});
+        std.log.err("{} test(s) failed", .{fails});
         return 1;
     }
 
