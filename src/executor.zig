@@ -432,6 +432,8 @@ pub fn main() !u8 {
         fail("invalid spir-v magic", .{});
     }
 
+    std.log.debug("scanning module for entry points", .{});
+
     // Collect all the entry points from the spir-v binary.
     // Collect some information from the SPIR-V module:
     // - Entry points (OpEntryPoint)
@@ -445,6 +447,11 @@ pub fn main() !u8 {
             defer i += instruction_len;
 
             const opcode = module[i] & 0xFFFF;
+            if (instruction_len == 0) {
+                std.log.err("instruction with opcode {} at offset {} has length 0", .{ opcode, i });
+                return 1;
+            }
+
             switch (opcode) {
                 spirv.OpSourceExtension => {
                     // OpSourceExtension layout:
@@ -548,7 +555,7 @@ pub fn main() !u8 {
             build_log.ptr,
             null,
         ));
-        std.log.err("Failed to build program:\n{s}", .{build_log});
+        std.log.err("Failed to build program. Error log: \n{s}\n", .{build_log});
     }
     try checkCl(status);
 
@@ -596,12 +603,13 @@ pub fn main() !u8 {
         }
     }
 
+    root_node.end();
+
     if (ok_count == entry_points.items.len) {
         std.debug.print("All {} tests passed.\n", .{ok_count});
     } else {
         std.debug.print("{} passed; {} skipped; {} failed.\n", .{ ok_count, skip_count, fail_count });
-        return 1;
     }
 
-    return 0;
+    return @boolToInt(fail_count != 0);
 }
