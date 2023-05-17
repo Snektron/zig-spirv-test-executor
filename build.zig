@@ -12,9 +12,9 @@ pub fn build(b: *std.build.Builder) void {
     });
     exe.linkLibC();
     exe.linkSystemLibraryName("OpenCL");
-    exe.install();
+    b.installArtifact(exe);
 
-    const run_cmd = exe.run();
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
@@ -31,8 +31,8 @@ pub fn build(b: *std.build.Builder) void {
             .cpu_features = "generic+Int64+Int16+Int8",
         }) catch unreachable,
         .optimize = optimize,
+        .test_runner = "src/test_runner.zig",
     });
-    test_kernel.setTestRunner("src/test_runner.zig");
     // TODO: This should be fixed in Zig.
     test_kernel.setExecCmd(&[_]?[]const u8{ "zig-out/bin/zig-spirv-executor", "-v", null });
     test_kernel.step.dependOn(b.getInstallStep());

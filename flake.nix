@@ -21,8 +21,8 @@
         domain = "gitlab.freedesktop.org";
         owner = "mesa";
         repo = "mesa";
-        rev = "4de9a4b2b8c41864aadae89be705ef125a745a0a";
-        hash = "sha256-MzfM+7ngvkubvkFgODRUXBNm8P7WWXQ24nChHeVLiRM=";
+        rev = "1df30b01ff151bbb5718270e49ca67b5e45e048d";
+        hash = "sha256-fwdwnmv9ukgbCLJYO7Cj03tbw26WTM4L/u8ytnfEQNQ=";
       };
       # Set some extra flags to create an extra slim build
       mesonFlags = (old.mesonFlags or [ ]) ++ [
