@@ -114,6 +114,7 @@ fn checkCl(status: c.cl_int) !void {
 const Options = struct {
     platform: ?[]const u8,
     device: ?[]const u8,
+    reducing: bool,
     verbose: bool,
     module: []const u8,
 };
@@ -127,6 +128,7 @@ fn parseArgs(arena: Allocator) !Options {
     var verbose: bool = false;
     var help: bool = false;
     var module: ?[]const u8 = null;
+    var reducing: bool = false;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--platform") or std.mem.eql(u8, arg, "-p")) {
@@ -137,6 +139,8 @@ fn parseArgs(arena: Allocator) !Options {
             verbose = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             help = true;
+        } else if (std.mem.eql(u8, arg, "--reducing")) {
+            reducing = true;
         } else if (module == null) {
             module = arg;
         } else {
@@ -173,6 +177,9 @@ fn parseArgs(arena: Allocator) !Options {
             \\                          matched. By default, uses the first device of the
             \\                          platform.
             \\--verbose -v              Turn on verbose logging.
+            \\--reducing                Enable 'reducing' mode. This mode makes the executor
+            \\                          always return 0 so that compile errors may be
+            \\                          reduced with spirv-reduce and ./reduce-segv.sh.
             \\--help -h                 Show this message and exit.
             \\
         );
@@ -183,6 +190,7 @@ fn parseArgs(arena: Allocator) !Options {
         .platform = platform,
         .device = device,
         .verbose = verbose,
+        .reducing = reducing,
         .module = module orelse fail("missing required argument <spir-v module path>", .{}),
     };
 }
@@ -482,9 +490,10 @@ pub fn main() !u8 {
 
     const error_names = blk: {
         const error_names = maybe_error_names orelse {
-            std.log.err("module does not have OpSourceExtension with Zig error codes", .{});
-            std.log.err("this does not look like a Zig test module", .{});
-            return 1;
+            std.log.warn("module does not have OpSourceExtension with Zig error codes", .{});
+            std.log.warn("this does not look like a Zig test module", .{});
+            std.log.warn("executing anyway...", .{});
+            break :blk &[_][]const u8{};
         };
 
         var names = std.ArrayList([]const u8).init(arena);
@@ -587,7 +596,10 @@ pub fn main() !u8 {
             continue;
         };
 
-        const error_name = error_names[error_code];
+        const error_name = if (error_code < error_names.len)
+            error_names[error_code]
+        else
+            "unknown error";
         if (error_code == 0) {
             ok_count += 1;
         } else if (std.mem.eql(u8, error_name, "SkipZigTest")) {
@@ -611,5 +623,5 @@ pub fn main() !u8 {
         std.debug.print("{} passed; {} skipped; {} failed.\n", .{ ok_count, skip_count, fail_count });
     }
 
-    return @boolToInt(fail_count != 0);
+    return @boolToInt(!options.reducing and fail_count != 0);
 }
