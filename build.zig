@@ -28,17 +28,21 @@ pub fn build(b: *std.build.Builder) void {
         .root_source_file = .{ .path = "src/test_kernel.zig" },
         .target = std.zig.CrossTarget.parse(.{
             .arch_os_abi = "spirv64-opencl",
-            .cpu_features = "generic+Int64+Int16+Int8",
+            .cpu_features = "generic+Int64+Int16+Int8+Float64",
         }) catch unreachable,
         .optimize = optimize,
         .test_runner = "src/test_runner.zig",
+        .use_llvm = false,
     });
     // TODO: This should be fixed in Zig.
     test_kernel.setExecCmd(&[_]?[]const u8{ "zig-out/bin/zig-spirv-executor", "-v", null });
     test_kernel.step.dependOn(b.getInstallStep());
     // TODO: This should be fixed for the SPIR-V backend.
     test_kernel.bundle_compiler_rt = false;
+    test_kernel.step.dependOn(&exe.step);
+
+    const run_test = b.addRunArtifact(test_kernel);
 
     const test_step = b.step("test", "Run the test kernel");
-    test_step.dependOn(&test_kernel.step);
+    test_step.dependOn(&run_test.step);
 }

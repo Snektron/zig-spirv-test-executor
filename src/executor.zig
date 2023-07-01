@@ -31,7 +31,7 @@ pub fn log(
     args: anytype,
 ) void {
     _ = scope;
-    if (@enumToInt(level) <= @enumToInt(std.log.Level.info) or log_verbose) {
+    if (@intFromEnum(level) <= @intFromEnum(std.log.Level.info) or log_verbose) {
         const prefix = comptime level.asText();
         std.debug.print(prefix ++ ": " ++ format ++ "\n", args);
     }
@@ -107,7 +107,7 @@ fn checkCl(status: c.cl_int) !void {
         c.CL_INVALID_DEVICE_QUEUE => error.InvalidDeviceQueue,
         c.CL_INVALID_SPEC_ID => error.InvalidSpecId,
         c.CL_MAX_SIZE_RESTRICTION_EXCEEDED => error.MaxSizeRestrictionExceeded,
-        else => error.Unkown,
+        else => error.Unknown,
     };
 }
 
@@ -123,9 +123,9 @@ fn parseArgs(arena: Allocator) !Options {
     var args = try std.process.argsWithAllocator(arena);
     _ = args.next(); // executable name
 
-    var platform: ?[]const u8 = null;
-    var device: ?[]const u8 = null;
-    var verbose: bool = false;
+    var platform: ?[]const u8 = std.os.getenv("ZVX_PLATFORM");
+    var device: ?[]const u8 = std.os.getenv("ZVX_DEVICE");
+    var verbose: bool = std.os.getenv("ZVX_VERBOSE") != null;
     var help: bool = false;
     var module: ?[]const u8 = null;
     var reducing: bool = false;
@@ -364,7 +364,7 @@ fn launchTestKernel(
         kernel,
         0,
         @sizeOf(c.cl_mem),
-        @ptrCast(*const anyopaque, &err_buf),
+        @ptrCast(&err_buf),
     ));
 
     const global_work_size: usize = 1;
@@ -521,7 +521,7 @@ pub fn main() !u8 {
 
     const properties = [_]c.cl_context_properties{
         c.CL_CONTEXT_PLATFORM,
-        @bitCast(c.cl_context_properties, @ptrToInt(platform)),
+        @bitCast(@intFromPtr(platform)),
         0,
     };
 
@@ -536,7 +536,7 @@ pub fn main() !u8 {
     // TODO: Check that this function is actually available, and error out otherwise.
     const program = c.clCreateProgramWithIL(
         context,
-        @ptrCast(*const anyopaque, module_bytes.ptr),
+        @ptrCast(module_bytes.ptr),
         module_bytes.len,
         &status,
     );
@@ -567,6 +567,7 @@ pub fn main() !u8 {
         std.log.err("Failed to build program. Error log: \n{s}\n", .{build_log});
     }
     try checkCl(status);
+    std.log.debug("program built successfully", .{});
 
     const buf = c.clCreateBuffer(
         context,
@@ -623,5 +624,5 @@ pub fn main() !u8 {
         std.debug.print("{} passed; {} skipped; {} failed.\n", .{ ok_count, skip_count, fail_count });
     }
 
-    return @boolToInt(!options.reducing and fail_count != 0);
+    return @intFromBool(!options.reducing and fail_count != 0);
 }
