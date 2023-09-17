@@ -117,6 +117,7 @@ const Options = struct {
     reducing: bool,
     verbose: bool,
     module: []const u8,
+    pocl_workaround: bool,
 };
 
 fn parseArgs(arena: Allocator) !Options {
@@ -129,6 +130,7 @@ fn parseArgs(arena: Allocator) !Options {
     var help: bool = false;
     var module: ?[]const u8 = null;
     var reducing: bool = false;
+    var pocl_workaround: bool = false;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--platform") or std.mem.eql(u8, arg, "-p")) {
@@ -141,6 +143,8 @@ fn parseArgs(arena: Allocator) !Options {
             help = true;
         } else if (std.mem.eql(u8, arg, "--reducing")) {
             reducing = true;
+        } else if (std.mem.eql(u8, arg, "--pocl-workaround-names")) {
+            pocl_workaround = true;
         } else if (module == null) {
             module = arg;
         } else {
@@ -180,6 +184,9 @@ fn parseArgs(arena: Allocator) !Options {
             \\--reducing                Enable 'reducing' mode. This mode makes the executor
             \\                          always return 0 so that compile errors may be
             \\                          reduced with spirv-reduce and ./reduce-segv.sh.
+            \\--pocl-workaround-names   Work around a crash in POCL if the entry point contains
+            \\                          special characters. This renames those entry points so
+            \\                          that they no longer crash.
             \\--help -h                 Show this message and exit.
             \\
         );
@@ -192,6 +199,7 @@ fn parseArgs(arena: Allocator) !Options {
         .verbose = verbose,
         .reducing = reducing,
         .module = module orelse fail("missing required argument <spir-v module path>", .{}),
+        .pocl_workaround = pocl_workaround,
     };
 }
 
@@ -481,6 +489,14 @@ pub fn main() !u8 {
                     // - interface (variable)
                     const name_ptr = std.mem.sliceAsBytes(module[i + 3 ..]);
                     const name = std.mem.sliceTo(name_ptr, 0);
+                    if (options.pocl_workaround) {
+                        for (name) |*char| {
+                            switch (char.*) {
+                                '@', '/' => char.* = ' ',
+                                else => {},
+                            }
+                        }
+                    }
                     try entry_points.append(name_ptr[0..name.len :0]);
                 },
                 else => {},
