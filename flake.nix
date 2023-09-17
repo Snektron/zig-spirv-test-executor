@@ -2,27 +2,42 @@
   description = "spirv test executor flake";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-23.05";
+    nixpkgs.url = "github:nixos/nixpkgs";
   };
 
   outputs = { self, nixpkgs }:
   let
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
+
+    spirv-llvm-translator = (pkgs.spirv-llvm-translator.override {
+      inherit (pkgs.llvmPackages_16) llvm;
+    }).overrideAttrs (old: {
+      version = "16.0.0";
+      src = pkgs.fetchFromGitHub {
+        owner = "KhronosGroup";
+        repo = "SPIRV-LLVM-Translator";
+        rev = "42de1b449486edb0aa2b764e4f4f3771d3f1a4a3";
+        hash = "sha256-rP7M52IDimfkF62Poa765LUL9dbIKNK5tn1FuS1k+c0=";
+      };
+    });
+
     mesa = (pkgs.mesa.override {
-      galliumDrivers = [ "swrast" ];
+      galliumDrivers = [ "swrast" "radeonsi" ];
       vulkanDrivers = [ ];
       vulkanLayers = [ ];
       withValgrind = false;
       enableGalliumNine = false;
+      llvmPackages_15 = pkgs.llvmPackages_16;
+      inherit spirv-llvm-translator;
     }).overrideAttrs (old: {
-      version = "23.0.1-git";
+      version = "23.8.26-git";
       src = pkgs.fetchFromGitLab {
         domain = "gitlab.freedesktop.org";
         owner = "mesa";
         repo = "mesa";
-        rev = "1df30b01ff151bbb5718270e49ca67b5e45e048d";
-        hash = "sha256-fwdwnmv9ukgbCLJYO7Cj03tbw26WTM4L/u8ytnfEQNQ=";
+        rev = "3a307e2248333dc95330b390167463c28bc4f9a7";
+        hash = "sha256-Wy0LgqXz7Sd1u4pIr0SUU6zus6cjjy8rd48YkPhJpKM=";
       };
       # Set some extra flags to create an extra slim build
       mesonFlags = (old.mesonFlags or [ ]) ++ [
@@ -37,7 +52,7 @@
         "--buildtype=debug"
       ];
       # Dirty patch to make one of the nixos-upstream patches working.
-      patches = [ ./patches/mesa-meson-options.patch ] ++ (old.patches or [ ]);
+      patches = [ ./patches/mesa-opencl.patch ./patches/mesa-disk-cache-key.patch ];
     });
 
     oclcpuexp-bin = pkgs.callPackage ({ stdenv, fetchurl, autoPatchelfHook, zlib, tbb_2021_8 }:
@@ -50,8 +65,8 @@
       propagatedBuildInputs = [ zlib tbb_2021_8 ];
 
       src = fetchurl {
-        url = "https://github.com/intel/llvm/releases/download/2023-WW13/oclcpuexp-2023.15.3.0.20_rel.tar.gz";
-        hash = "sha256-lMcijaFO3Dw0KHC+pYgBJ9TzCIpp16Xtfxo5COoPK9Y=";
+        url = "https://github.com/intel/llvm/releases/download/2023-WW27/oclcpuexp-2023.16.6.0.28_rel.tar.gz";
+        hash = "sha256-iJB5fRNgjSAKNishxJ0QFhIFDadwxNS1I/tbVupduRk=";
       };
 
       sourceRoot = ".";
@@ -71,18 +86,6 @@
       '';
     }) {};
 
-    spirv-llvm-translator = (pkgs.spirv-llvm-translator.override {
-      inherit (pkgs.llvmPackages_16) llvm;
-    }).overrideAttrs (old: {
-      version = "16.0.0";
-      src = pkgs.fetchFromGitHub {
-        owner = "KhronosGroup";
-        repo = "SPIRV-LLVM-Translator";
-        rev = "42de1b449486edb0aa2b764e4f4f3771d3f1a4a3";
-        hash = "sha256-rP7M52IDimfkF62Poa765LUL9dbIKNK5tn1FuS1k+c0=";
-      };
-    });
-
     pocl = pkgs.callPackage ({
       stdenv,
       gcc-unwrapped,
@@ -93,9 +96,9 @@
       llvmPackages_16,
       ocl-icd,
       rocm-runtime
-    }: llvmPackages_16.stdenv.mkDerivation {
+    }: stdenv.mkDerivation {
       pname = "pocl";
-      version = "3.1";
+      version = "4.0";
 
       nativeBuildInputs = [
         cmake
@@ -116,11 +119,9 @@
       src = fetchFromGitHub {
         owner = "pocl";
         repo = "pocl";
-        rev = "6de05a28bc81be5db50e4f8f9f7681aa4ff3edb5";
-        hash = "sha256-sjlJNsgZWkjQDPQYzsA4SPZfAOLsxa3X0rxLBBR33BI=";
+        rev = "d6ec42378fe6f618b92170d2be45f47eae22343f";
+        hash = "sha256-Uo4Np4io1s/NMK+twX36PLBFP0j5j/0NkkBvS2Zv9ng=";
       };
-
-      patches = [ ./patches/pocl.patch ];
 
       postPatch = ''
         substituteInPlace cmake/LLVM.cmake \
@@ -140,13 +141,15 @@
       ];
     }) {};
 
-    # Merge the ICD files from oclcpuexp and mesa
+    # Merge the ICD files from all the drivers.
     ocl-vendors = pkgs.runCommand "ocl-vendors" {} ''
       mkdir -p $out/etc/OpenCL/vendors
       cp ${mesa.opencl}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
       cp ${oclcpuexp-bin}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
-      cp ${pocl}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
     '';
+    # TODO: POCL cannot be combined with Mesa using dynamic linking...
+    # See https://github.com/pocl/pocl/blob/main/README.packaging.
+    # cp ${pocl}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
 
     # Needed for pocl, otherwise it cannot find -lgcc
     libgcc = pkgs.runCommand "libgcc" {} ''
