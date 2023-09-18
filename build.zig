@@ -11,7 +11,8 @@ pub fn build(b: *std.build.Builder) void {
         .optimize = optimize,
     });
     exe.linkLibC();
-    exe.linkSystemLibraryName("OpenCL");
+    exe.linkSystemLibrary("OpenCL");
+    exe.linkSystemLibrary("SPIRV-Tools-shared");
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const c = @cImport({
     @cInclude("CL/opencl.h");
+    @cInclude("spirv-tools/libspirv.h");
 });
 
 const spirv = struct {
@@ -14,8 +15,12 @@ const spirv = struct {
 
     // We only really care about these instructions, so no need to pull in the entire spir-v spec here.
     const OpSourceExtension = 4;
+    const OpName = 5;
+    const OpString = 7;
+    const OpLine = 8;
     const OpEntryPoint = 15;
     const OpExecutionMode = 16;
+    const OpFunction = 54;
 
     const ExecutionMode = enum(Word) {
         Initializer = 33,
@@ -416,6 +421,148 @@ fn launchTestKernel(
     return result;
 }
 
+const InstructionIterator = struct {
+    module: []spirv.Word,
+    index: usize = 0,
+    offset: usize = spirv.header_size,
+
+    const Instruction = struct {
+        opcode: spirv.Word,
+        index: usize,
+        offset: usize,
+        operands: []spirv.Word,
+    };
+
+    fn init(module: []spirv.Word) InstructionIterator {
+        return .{
+            .module = module,
+        };
+    }
+
+    fn next(self: *InstructionIterator) ?Instruction {
+        if (self.offset >= self.module.len) return null;
+
+        const instruction_len = self.module[self.offset] >> 16;
+        defer self.offset += instruction_len;
+        defer self.index += 1;
+
+        if (instruction_len == 0) {
+            fail("instruction at offset {} (line {}) has length 0", .{ self.offset, self.index + 5 });
+        }
+
+        return Instruction{
+            .opcode = self.module[self.offset] & 0xFFFF,
+            .index = self.index,
+            .offset = self.offset,
+            .operands = self.module[self.offset..][1..instruction_len],
+        };
+    }
+};
+
+fn validateModule(module: []u32) void {
+    const context = c.spvContextCreate(c.SPV_ENV_UNIVERSAL_1_5); // TODO: Use OpenCL environments?
+    std.debug.assert(context != null); // Assume the context is always valid.
+    defer c.spvContextDestroy(context);
+
+    var diagnostic: c.spv_diagnostic = null;
+    defer c.spvDiagnosticDestroy(diagnostic);
+    switch (c.spvValidateBinary(context, module.ptr, module.len, &diagnostic)) {
+        c.SPV_SUCCESS => return,
+        else => |code| if (diagnostic == null) {
+            fail("spirv-tool returned error {} without diagnostic", .{code});
+        },
+    }
+
+    const err_index = diagnostic.*.position.index;
+    const msg = diagnostic.*.@"error";
+
+    // Add 5 to the index to get the line number, as there are some comments with
+    // spirv-dis.
+    std.log.err("line {}: {s}", .{ err_index + 5, msg });
+
+    // Attempt to find more details about where this error was generated.
+    const Position = struct {
+        file_id: spirv.Word,
+        line: u32,
+        column: u32,
+    };
+
+    var maybe_func_id: ?spirv.Word = null;
+    var maybe_pos: ?Position = null;
+    {
+        var it = InstructionIterator.init(module);
+        while (it.next()) |inst| {
+            if (inst.index >= err_index) break;
+
+            switch (inst.opcode) {
+                spirv.OpFunction => {
+                    // 0: result type
+                    // 1: result id
+                    // 2: function control
+                    // 3: function type
+                    maybe_func_id = inst.operands[1];
+                },
+                spirv.OpLine => {
+                    // 0: file
+                    // 1: line
+                    // 2: column
+                    maybe_pos = Position{
+                        .file_id = inst.operands[0],
+                        .line = inst.operands[1],
+                        .column = inst.operands[2],
+                    };
+                },
+                else => {},
+            }
+        }
+    }
+
+    var maybe_func_name: ?[]const u8 = null;
+    var maybe_source_file: ?[]const u8 = null;
+    {
+        var it = InstructionIterator.init(module);
+        while (it.next()) |inst| {
+            switch (inst.opcode) {
+                spirv.OpName => if (maybe_func_id) |id| {
+                    // 0: target
+                    // 1: name
+                    if (inst.operands[0] == id) {
+                        const bytes = std.mem.sliceAsBytes(inst.operands[1..]);
+                        maybe_func_name = std.mem.sliceTo(bytes, 0);
+                    }
+                },
+                spirv.OpString => if (maybe_pos) |pos| {
+                    // 0: target
+                    // 1: name
+                    if (inst.operands[0] == pos.file_id) {
+                        const bytes = std.mem.sliceAsBytes(inst.operands[1..]);
+                        maybe_source_file = std.mem.sliceTo(bytes, 0);
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    if (maybe_pos) |pos| {
+        if (maybe_source_file) |file| {
+            std.log.err("at {s}:{}:{}", .{ file, pos.line, pos.column });
+        } else {
+            std.log.err("at <unknown>:{}:{}", .{ pos.line, pos.column });
+        }
+    }
+
+    if (maybe_func_id) |id| {
+        if (maybe_func_name) |name| {
+            std.log.err("in function %{} ({s})", .{ id, name });
+        } else {
+            std.log.err("in function %{} (<unknown>)", .{id});
+        }
+    }
+
+    std.process.exit(1);
+}
+
 pub fn main() !u8 {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_instance.deinit();
@@ -453,6 +600,8 @@ pub fn main() !u8 {
         fail("invalid spir-v magic", .{});
     }
 
+    validateModule(module);
+
     std.log.debug("scanning module for entry points", .{});
 
     // Collect all the entry points from the spir-v binary.
@@ -464,23 +613,13 @@ pub fn main() !u8 {
     var initializers = std.ArrayList(spirv.Word).init(arena);
     var maybe_error_names: ?[]const u8 = null;
     {
-        var i: usize = spirv.header_size;
-        while (i < module.len) {
-            const instruction_len = module[i] >> 16;
-            defer i += instruction_len;
-
-            const opcode = module[i] & 0xFFFF;
-            if (instruction_len == 0) {
-                std.log.err("instruction with opcode {} at offset {} has length 0", .{ opcode, i });
-                return 1;
-            }
-
-            switch (opcode) {
+        var it = InstructionIterator.init(module);
+        while (it.next()) |inst| {
+            switch (inst.opcode) {
                 spirv.OpSourceExtension => {
                     // OpSourceExtension layout:
-                    // 0: opcode and length (1 word)
-                    // 1: extension name (string literal, variable) <-- we want this
-                    const extension_ptr = std.mem.sliceAsBytes(module[i + 1 ..]);
+                    // 0: extension name (string literal, variable) <-- we want this
+                    const extension_ptr = std.mem.sliceAsBytes(inst.operands);
                     const extension = std.mem.sliceTo(extension_ptr, 0);
                     // Check if the extension has the secret zig-generated prefix.
                     if (std.mem.startsWith(u8, extension, "zig_errors:")) {
@@ -489,12 +628,11 @@ pub fn main() !u8 {
                 },
                 spirv.OpEntryPoint => {
                     // OpEntryPoint layout:
-                    // 0: opcode and length (1 word)
-                    // 1: execution model (1 word)
-                    // 2: function reference (1 word)
-                    // 3: name (string literal, variable) <-- we want this
-                    // 5: interface (variable)
-                    const name_ptr = std.mem.sliceAsBytes(module[i + 3 ..]);
+                    // 0: execution model (1 word)
+                    // 1: function reference (1 word)
+                    // 2: name (string literal, variable) <-- we want this
+                    // n: interface (variable)
+                    const name_ptr = std.mem.sliceAsBytes(inst.operands[2..]);
                     const name = std.mem.sliceTo(name_ptr, 0);
                     if (options.pocl_workaround) {
                         for (name) |*char| {
@@ -504,17 +642,15 @@ pub fn main() !u8 {
                             }
                         }
                     }
-                    try entry_points.put(module[i + 2], name_ptr[0..name.len :0]);
+                    try entry_points.put(inst.operands[1], name_ptr[0..name.len :0]);
                 },
                 spirv.OpExecutionMode => {
                     // OpExecutionMode layout:
-                    // 0: opcode and length (1 word)
-                    // 1: entry point (1 word)
-                    // 2: modes... (n words)
-                    const id = module[i + 1];
-                    std.log.debug("{} {}", .{i, instruction_len});
-                    for (2..instruction_len) |j| {
-                        if (@as(spirv.ExecutionMode, @enumFromInt(module[i + j])) == .Initializer) {
+                    // 0: entry point (1 word)
+                    // 1: modes... (n words)
+                    const id = inst.operands[0];
+                    for (inst.operands[1..]) |mode| {
+                        if (@as(spirv.ExecutionMode, @enumFromInt(mode)) == .Initializer) {
                             try initializers.append(id);
                             break;
                         }
