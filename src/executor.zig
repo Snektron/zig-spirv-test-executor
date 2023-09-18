@@ -15,6 +15,11 @@ const spirv = struct {
     // We only really care about these instructions, so no need to pull in the entire spir-v spec here.
     const OpSourceExtension = 4;
     const OpEntryPoint = 15;
+    const OpExecutionMode = 16;
+
+    const ExecutionMode = enum(Word) {
+        Initializer = 33,
+    };
 };
 
 pub const std_options = struct {
@@ -454,7 +459,9 @@ pub fn main() !u8 {
     // Collect some information from the SPIR-V module:
     // - Entry points (OpEntryPoint)
     // - Error names (OpSourceExtension that starts with zig_errors:).
-    var entry_points = std.ArrayList([:0]const u8).init(arena);
+
+    var entry_points = std.AutoArrayHashMap(spirv.Word, [:0]const u8).init(arena);
+    var initializers = std.ArrayList(spirv.Word).init(arena);
     var maybe_error_names: ?[]const u8 = null;
     {
         var i: usize = spirv.header_size;
@@ -471,8 +478,8 @@ pub fn main() !u8 {
             switch (opcode) {
                 spirv.OpSourceExtension => {
                     // OpSourceExtension layout:
-                    // - opcode and length (1 word)
-                    // - extension name (string literal, variable) <-- we want this
+                    // 0: opcode and length (1 word)
+                    // 1: extension name (string literal, variable) <-- we want this
                     const extension_ptr = std.mem.sliceAsBytes(module[i + 1 ..]);
                     const extension = std.mem.sliceTo(extension_ptr, 0);
                     // Check if the extension has the secret zig-generated prefix.
@@ -481,12 +488,12 @@ pub fn main() !u8 {
                     }
                 },
                 spirv.OpEntryPoint => {
-                    // Entry point layout:
-                    // - opcode and length (1 word)
-                    // - execution model (1 word)
-                    // - function reference (1 word)
-                    // - name (string literal, variable) <-- we want this
-                    // - interface (variable)
+                    // OpEntryPoint layout:
+                    // 0: opcode and length (1 word)
+                    // 1: execution model (1 word)
+                    // 2: function reference (1 word)
+                    // 3: name (string literal, variable) <-- we want this
+                    // 5: interface (variable)
                     const name_ptr = std.mem.sliceAsBytes(module[i + 3 ..]);
                     const name = std.mem.sliceTo(name_ptr, 0);
                     if (options.pocl_workaround) {
@@ -497,10 +504,29 @@ pub fn main() !u8 {
                             }
                         }
                     }
-                    try entry_points.append(name_ptr[0..name.len :0]);
+                    try entry_points.put(module[i + 2], name_ptr[0..name.len :0]);
+                },
+                spirv.OpExecutionMode => {
+                    // OpExecutionMode layout:
+                    // 0: opcode and length (1 word)
+                    // 1: entry point (1 word)
+                    // 2: modes... (n words)
+                    const id = module[i + 1];
+                    std.log.debug("{} {}", .{i, instruction_len});
+                    for (2..instruction_len) |j| {
+                        if (@as(spirv.ExecutionMode, @enumFromInt(module[i + j])) == .Initializer) {
+                            try initializers.append(id);
+                            break;
+                        }
+                    }
                 },
                 else => {},
             }
+        }
+
+        // Make sure that we wont try to execute the initializer as kernel.
+        for (initializers.items) |id| {
+            _ = entry_points.swapRemove(id);
         }
     }
 
@@ -522,9 +548,10 @@ pub fn main() !u8 {
         break :blk names.items;
     };
 
-    std.log.debug("module has {} entry point(s)", .{entry_points.items.len});
+    std.log.debug("module has {} entry point(s)", .{entry_points.count()});
+    std.log.debug("module has {} initializer(s)", .{initializers.items.len});
 
-    if (entry_points.items.len == 0) {
+    if (entry_points.count() == 0) {
         // Nothing to test.
         return 0;
     }
@@ -595,12 +622,12 @@ pub fn main() !u8 {
     try checkCl(status);
 
     var progress = std.Progress{};
-    const root_node = progress.start("Test", entry_points.items.len);
+    const root_node = progress.start("Test", entry_points.count());
 
     var ok_count: usize = 0;
     var fail_count: usize = 0;
     var skip_count: usize = 0;
-    for (entry_points.items) |name| {
+    for (entry_points.values()) |name| {
         var test_node = root_node.start(name, 0);
         test_node.activate();
         defer test_node.end();
@@ -634,7 +661,7 @@ pub fn main() !u8 {
 
     root_node.end();
 
-    if (ok_count == entry_points.items.len) {
+    if (ok_count == entry_points.count()) {
         std.debug.print("All {} tests passed.\n", .{ok_count});
     } else {
         std.debug.print("{} passed; {} skipped; {} failed.\n", .{ ok_count, skip_count, fail_count });

@@ -148,6 +148,7 @@
         name = "zig-spirv-intel";
 
         nativeBuildInputs = [
+          pkgs.khronos-ocl-icd-loader
           pkgs.clinfo
           pkgs.opencl-headers
           pkgs.spirv-tools
@@ -164,6 +165,7 @@
         name = "zig-spirv-rusticl";
 
         nativeBuildInputs = [
+          pkgs.khronos-ocl-icd-loader
           pkgs.clinfo
           pkgs.opencl-headers
           pkgs.spirv-tools
@@ -187,6 +189,7 @@
         name = "zig-spirv-pocl";
 
         nativeBuildInputs = [
+          pkgs.khronos-ocl-icd-loader
           pkgs.clinfo
           pkgs.opencl-headers
           pkgs.spirv-tools
@@ -202,7 +205,7 @@
         LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.khronos-ocl-icd-loader pkgs.gcc-unwrapped ];
       };
 
-      default = pocl;
+      default = intel;
     };
   };
 }
