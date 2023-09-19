@@ -141,11 +141,61 @@
           "-DWITH_HSA_RUNTIME_INCLUDE_DIR=${rocm-runtime}/include/hsa"
         ];
       }) {};
+
+      shady = pkgs.callPackage ({
+        stdenv,
+        fetchFromGitHub,
+        cmake,
+        ninja,
+        spirv-headers,
+        llvmPackages_16,
+        libxml2
+      }: stdenv.mkDerivation {
+        pname = "shady";
+        version = "0.1";
+
+        src = fetchFromGitHub {
+          owner = "Hugobros3";
+          repo = "shady";
+          rev = "c2691d285654d0a866a55aac510dfe4a596c9428";
+          sha256 = "sha256-+jGrcuqbHv8+E17SMqK6JuPbW7OpUL2j1loz0Obo0AY=";
+          fetchSubmodules = true;
+        };
+
+        nativeBuildInputs = [
+          cmake
+          ninja
+        ];
+
+        buildInputs = [
+          spirv-headers
+          llvmPackages_16.llvm
+          libxml2
+        ];
+
+        cmakeFlags = [
+          "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+          "-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON"
+        ];
+
+        installPhase = ''
+          ls bin/
+          ninja install
+          # slim is not installed by default for some reason
+          mkdir -p $out/bin
+          mv bin/slim $out/bin/slim
+        '';
+      }) {};
     };
 
-    devShells.${system} = rec {
-      intel = pkgs.mkShell {
-        name = "zig-spirv-intel";
+    devShells.${system} = let
+      mkEnv = {
+        name,
+        driver,
+        extraPkgs ? [],
+        env ? {},
+      }: pkgs.mkShell {
+        inherit name;
 
         nativeBuildInputs = [
           pkgs.khronos-ocl-icd-loader
@@ -154,29 +204,25 @@
           pkgs.spirv-tools
           pkgs.gdb
           packages.${system}.spirv-llvm-translator
-        ];
+          packages.${system}.shady
+        ] ++ extraPkgs;
 
-        OCL_ICD_VENDORS = "${packages.${system}.oclcpuexp-bin}/etc/OpenCL/vendors";
+        OCL_ICD_VENDORS = "${driver}/etc/OpenCL/vendors";
 
         LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.khronos-ocl-icd-loader pkgs.gcc-unwrapped ];
+      } // env;
+    in rec {
+      intel = mkEnv {
+        name = "zig-spirv-intel";
+        driver = packages.${system}.oclcpuexp-bin;
       };
 
       rusticl = pkgs.mkShell {
         name = "zig-spirv-rusticl";
-
-        nativeBuildInputs = [
-          pkgs.khronos-ocl-icd-loader
-          pkgs.clinfo
-          pkgs.opencl-headers
-          pkgs.spirv-tools
-          pkgs.gdb
-          packages.${system}.spirv-llvm-translator
-        ];
-
-        OCL_ICD_VENDORS = "${packages.${system}.mesa.opencl}/etc/OpenCL/vendors";
-
-        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.khronos-ocl-icd-loader pkgs.gcc-unwrapped ];
-        RUSTICL_ENABLE = "swrast:0,radeonsi:0";
+        driver = packages.${system}.mesa.opencl;
+        env = {
+          RUSTICL_ENABLE = "swrast:0,radeonsi:0";
+        };
       };
 
       pocl = let
@@ -185,24 +231,13 @@
           mkdir -p $out/lib
           cp ${pkgs.gcc-unwrapped}/lib/gcc/x86_64-unknown-linux-gnu/*/libgcc.a $out/lib/libgcc.a
         '';
-      in pkgs.mkShell {
+      in mkEnv {
         name = "zig-spirv-pocl";
-
-        nativeBuildInputs = [
-          pkgs.khronos-ocl-icd-loader
-          pkgs.clinfo
-          pkgs.opencl-headers
-          pkgs.spirv-tools
-          pkgs.gdb
-          # Otherwise pocl cannot find -lgcc_s
+        driver = packages.${system}.pocl;
+        extraPkgs = [
           pkgs.gcc-unwrapped.lib
           libgcc
-          packages.${system}.spirv-llvm-translator
         ];
-
-        OCL_ICD_VENDORS = "${packages.${system}.pocl}/etc/OpenCL/vendors";
-
-        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.khronos-ocl-icd-loader pkgs.gcc-unwrapped ];
       };
 
       default = intel;
