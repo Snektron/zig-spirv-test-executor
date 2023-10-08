@@ -478,7 +478,7 @@ fn validateModule(module: []u32) void {
 
     // Add 5 to the index to get the line number, as there are some comments with
     // spirv-dis.
-    std.log.err("line {}: {s}", .{ err_index + 5, msg });
+    std.log.err("validation failed at line {}: {s}", .{ err_index + 5, msg });
 
     // Attempt to find more details about where this error was generated.
     const Position = struct {
@@ -787,7 +787,7 @@ pub fn main() !u8 {
             progress.log("SKIP\n", .{});
         } else {
             fail_count += 1;
-            progress.log("FAIL ({s})\n", .{error_name});
+            progress.log("FAIL ({s} {})\n", .{error_name, error_code});
         }
 
         if (log_verbose) {

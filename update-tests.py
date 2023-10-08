@@ -7,10 +7,12 @@ import os
 ap = argparse.ArgumentParser('script to update passing Zig tests')
 ap.add_argument('compiler', type=str, help='Path to Zig compiler')
 ap.add_argument('test', type=str, help='Path to file to test')
+ap.add_argument('--todo', default=False, action='store_true', help='Print the number of tests that still need to be done')
 
 args = ap.parse_args()
 
 basedir = os.path.abspath(os.path.dirname(__file__))
+todo = {}
 
 def update_test(tmpdir, path):
     with open(path, 'rb') as f:
@@ -22,6 +24,10 @@ def update_test(tmpdir, path):
     for line in test:
         if b'if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;' in line:
             total += 1
+
+    if args.todo:
+        todo[path] = total
+        return
 
     current = 0
     for i, line in enumerate(test):
@@ -47,7 +53,7 @@ def update_test(tmpdir, path):
                 '-target',
                 'spirv64-opencl',
                 '-mcpu',
-                'generic+Int64+Int16+Int8+Float64',
+                'generic+Int64+Int16+Int8+Float64+Float16',
                 '-fno-llvm',
                 '--test-cmd',
                 os.path.join(basedir, 'zig-out', 'bin', 'zig-spirv-executor'),
@@ -64,15 +70,34 @@ def update_test(tmpdir, path):
                     error = 'index out of bounds'
                 elif 'panic: ' in stderr:
                     error = 'panic'
+                elif 'Segmentation fault' in stderr:
+                    error = 'segfault'
+                elif '... FAIL (' in stderr:
+                    error = 'test failure'
+                elif 'has no member named \'fd_t\'' in stderr:
+                    error = 'uses expectEqualSlices'
+                elif 'Floating point width of ' in stderr:
+                    error = 'uses f128/f80 float'
+                elif 'BuildProgramFailure' in stderr:
+                    error = 'backend compilation error'
+                elif 'error: validation failed' in stderr:
+                    error = 'validation failure'
+                elif 'cannot call function pointers' in stderr:
+                    error = 'uses function pointers'
                 else:
                     tags = []
+                    todos = []
                     for ln in stderr.split('\n'):
                         if 'TODO (SPIR-V): implement AIR tag' in ln:
                             tags.append(ln.split(' ')[-1])
-                    if len(tags) == 0:
-                        error = 'unknown'
-                    else:
+                        elif 'TODO (SPIR-V): ' in ln:
+                            todos.append(ln.split('TODO (SPIR-V): ')[1])
+                    if len(tags) != 0:
                         error = 'missing air tags ' + ', '.join(tags)
+                    elif len(todos) != 0:
+                        error = 'todo ' + ', '.join(todos)
+                    else:
+                        error = 'unknown'
 
                 print(f'[{current}/{total}] FAIL {name} ({error})')
 
@@ -81,6 +106,8 @@ def update_test(tmpdir, path):
     with open(path, 'wb') as f:
         f.writelines(new_test)
 
+    subprocess.run([args.compiler, 'fmt', path], capture_output=True)
+
 with tempfile.TemporaryDirectory() as tmpdir:
     if os.path.isfile(args.test):
         update_test(tmpdir, args.test)
@@ -88,6 +115,16 @@ with tempfile.TemporaryDirectory() as tmpdir:
         for subdir, dirs, files in os.walk(args.test):
             for path in files:
                 path = os.path.join(subdir, path)
-                print(f'updating {path}')
+                if not args.todo:
+                    print(f'updating {path}')
+
                 update_test(tmpdir, path)
-                print('')
+
+                if not args.todo:
+                    print('')
+
+if args.todo:
+    x = sorted(todo.items(), key=lambda x: x[1])
+    for k, v in x:
+        if v > 0:
+            print(v, k)

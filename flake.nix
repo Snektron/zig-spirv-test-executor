@@ -217,7 +217,7 @@
         driver = packages.${system}.oclcpuexp-bin;
       };
 
-      rusticl = pkgs.mkShell {
+      rusticl = mkEnv {
         name = "zig-spirv-rusticl";
         driver = packages.${system}.mesa.opencl;
         env = {
