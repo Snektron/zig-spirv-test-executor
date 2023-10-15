@@ -12,29 +12,29 @@ ap.add_argument('--todo', default=False, action='store_true', help='Print the nu
 args = ap.parse_args()
 
 basedir = os.path.abspath(os.path.dirname(__file__))
-todo = {}
 
-def update_test(tmpdir, path):
+def scan_todo(path):
+    with open(path, 'rb') as f:
+        test = f.readlines()
+    total = 0
+    for line in test:
+        if b'if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;' in line and b'flaky' not in line:
+            total += 1
+    return total
+
+def update_test(tmpdir, path, start_test, total):
     with open(path, 'rb') as f:
         test = f.readlines()
 
     new_test = []
     test_path = os.path.join(tmpdir, 'test.zig')
-    total = 0
-    for line in test:
-        if b'if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;' in line:
-            total += 1
 
-    if args.todo:
-        todo[path] = total
-        return
-
-    current = 0
+    current = start_test
     for i, line in enumerate(test):
         if line.startswith(b'test'):
             # Cheekily strip out the text from the quotes
             name = line[len('test "') : -len('" {\n')].decode('utf-8')
-        elif b'if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;' in line:
+        elif b'if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;' in line and b'flaky' not in line:
             current += 1
 
             test_without_check = test[:]
@@ -108,23 +108,36 @@ def update_test(tmpdir, path):
 
     subprocess.run([args.compiler, 'fmt', path], capture_output=True)
 
+todo = {}
+total_todo = 0
 with tempfile.TemporaryDirectory() as tmpdir:
     if os.path.isfile(args.test):
-        update_test(tmpdir, args.test)
+        tests = scan_todo(args.test)
+        todo[args.test] = tests
+        total_todo += tests
     else:
         for subdir, dirs, files in os.walk(args.test):
             for path in files:
                 path = os.path.join(subdir, path)
-                if not args.todo:
-                    print(f'updating {path}')
-
-                update_test(tmpdir, path)
-
-                if not args.todo:
-                    print('')
+                tests = scan_todo(path)
+                todo[path] = tests
+                total_todo += tests
 
 if args.todo:
     x = sorted(todo.items(), key=lambda x: x[1])
     for k, v in x:
         if v > 0:
             print(v, k)
+else:
+    current_test = 0
+    with tempfile.TemporaryDirectory() as tmpdir:
+        if os.path.isfile(args.test):
+            update_test(tmpdir, args.test)
+        else:
+            for subdir, dirs, files in os.walk(args.test):
+                for path in files:
+                    path = os.path.join(subdir, path)
+                    if todo[path] != 0:
+                        print(f'updating {path}')
+                        update_test(tmpdir, path, current_test, total_todo)
+                        current_test += todo[path]
