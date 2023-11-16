@@ -32,13 +32,13 @@
         llvmPackages_15 = pkgs.llvmPackages_16;
         inherit spirv-llvm-translator;
       }).overrideAttrs (old: {
-        version = "23.8.26-git";
+        version = "23.11.16-git";
         src = pkgs.fetchFromGitLab {
           domain = "gitlab.freedesktop.org";
           owner = "mesa";
           repo = "mesa";
-          rev = "3a307e2248333dc95330b390167463c28bc4f9a7";
-          hash = "sha256-Wy0LgqXz7Sd1u4pIr0SUU6zus6cjjy8rd48YkPhJpKM=";
+          rev = "e1cf75b411759db0c49673b89b5325fb0442d547";
+          hash = "sha256-o6Exx2Ygjd+uAYze/qLycOO7IY5qq+QjXQg8fdi9cus=";
         };
         # Set some extra flags to create an extra slim build
         mesonFlags = (old.mesonFlags or [ ]) ++ [
@@ -149,7 +149,8 @@
         ninja,
         spirv-headers,
         llvmPackages_16,
-        libxml2
+        libxml2,
+        json_c
       }: stdenv.mkDerivation {
         pname = "shady";
         version = "0.1";
@@ -157,8 +158,8 @@
         src = fetchFromGitHub {
           owner = "Hugobros3";
           repo = "shady";
-          rev = "c2691d285654d0a866a55aac510dfe4a596c9428";
-          sha256 = "sha256-+jGrcuqbHv8+E17SMqK6JuPbW7OpUL2j1loz0Obo0AY=";
+          rev = "76c57516237c7ca5e4c0ed1133e99cec9a6334ea";
+          sha256 = "sha256-C6LGH/DLY02lRydtHMfZ/Z/gbWR6Evuy+VExMgZaH0w=";
           fetchSubmodules = true;
         };
 
@@ -171,6 +172,7 @@
           spirv-headers
           llvmPackages_16.llvm
           libxml2
+          json_c
         ];
 
         cmakeFlags = [

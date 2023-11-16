@@ -92,6 +92,8 @@ def update_test(tmpdir, path, start_test, total):
                             tags.append(ln.split(' ')[-1])
                         elif 'TODO (SPIR-V): ' in ln:
                             todos.append(ln.split('TODO (SPIR-V): ')[1])
+                        elif 'TODO: ' in ln:
+                            todos.append(ln.split('TODO: ')[1])
                     if len(tags) != 0:
                         error = 'missing air tags ' + ', '.join(tags)
                     elif len(todos) != 0:
@@ -132,7 +134,7 @@ else:
     current_test = 0
     with tempfile.TemporaryDirectory() as tmpdir:
         if os.path.isfile(args.test):
-            update_test(tmpdir, args.test)
+            update_test(tmpdir, args.test, current_test, total_todo)
         else:
             for subdir, dirs, files in os.walk(args.test):
                 for path in files:
