@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn build(b: *std.build.Builder) void {
+pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -27,10 +27,15 @@ pub fn build(b: *std.build.Builder) void {
     const test_kernel = b.addTest(.{
         .name = "test",
         .root_source_file = .{ .path = "src/test_kernel.zig" },
-        .target = std.zig.CrossTarget.parse(.{
-            .arch_os_abi = "spirv64-opencl",
-            .cpu_features = "generic+Int64+Int16+Int8+Float64",
-        }) catch unreachable,
+        // .target = std.zig.CrossTarget.parse(.{
+        //     .arch_os_abi = "spirv64-opencl",
+        //     .cpu_features = "generic+Int64+Int16+Int8+Float64",
+        // }) catch unreachable,
+        .target = b.resolveTargetQuery(.{
+            .cpu_arch = .spirv64,
+            .os_tag = .opencl,
+            .cpu_features_add = std.Target.spirv.featureSet(&.{.Int64, .Int16, .Int8, .Float64}),
+        }),
         .optimize = optimize,
         .test_runner = "src/test_runner.zig",
         .use_llvm = false,

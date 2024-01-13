@@ -308,7 +308,7 @@ fn pickPlatformAndDevice(
         fail("no opencl platform available", .{});
     }
 
-    var platforms = try arena.alloc(c.cl_platform_id, num_platforms);
+    const platforms = try arena.alloc(c.cl_platform_id, num_platforms);
     try checkCl(c.clGetPlatformIDs(num_platforms, platforms.ptr, null));
 
     if (options.platform) |platform_query| {
