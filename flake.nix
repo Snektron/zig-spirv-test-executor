@@ -225,9 +225,9 @@
 
       ocl-vendors = pkgs.runCommand "ocl-vendors" {} ''
         mkdir -p $out/etc/OpenCL/vendors
-        cp ${packages.${system}.mesa.opencl}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
-        cp ${packages.${system}.oclcpuexp-bin}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
-        cp ${packages.${system}.pocl}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
+        cp ${packages.${system}.mesa.opencl}/etc/OpenCL/vendors/rusticl.icd $out/etc/OpenCL/vendors/
+        cp ${packages.${system}.oclcpuexp-bin}/etc/OpenCL/vendors/intelocl64.icd $out/etc/OpenCL/vendors/
+        cp ${packages.${system}.pocl}/etc/OpenCL/vendors/pocl.icd $out/etc/OpenCL/vendors/
       '';
 
       # Otherwise pocl cannot find -lgcc
