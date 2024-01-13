@@ -101,8 +101,9 @@
         cmake,
         ninja,
         python3,
-        llvmPackages_16,
+        llvmPackages_17,
         ocl-icd,
+        libxml2
       }: stdenv.mkDerivation {
         pname = "pocl";
         version = "5.0";
@@ -111,15 +112,16 @@
           cmake
           ninja
           python3
-          llvmPackages_16.clang
+          llvmPackages_17.clang
         ];
 
-        buildInputs = with llvmPackages_16; [
+        buildInputs = with llvmPackages_17; [
           llvm
           clang-unwrapped
           clang-unwrapped.lib
           ocl-icd
           spirv-llvm-translator
+          libxml2
         ];
 
         src = fetchFromGitHub {
@@ -140,6 +142,9 @@
           "-DENABLE_ICD=ON"
           "-DENABLE_TESTS=OFF"
           "-DENABLE_EXAMPLES=OFF"
+          # Required to make POCL play nice with Mesa
+          # See https://github.com/pocl/pocl/blob/main/README.packaging
+          "-DSTATIC_LLVM=ON"
           "-DEXTRA_KERNEL_FLAGS=-L${gcc-unwrapped.lib}/lib"
         ];
       }) {};
@@ -217,62 +222,43 @@
           mv tools/spirv2clc $out/bin/spirv2clc
         '';
       }) {};
+
+      ocl-vendors = pkgs.runCommand "ocl-vendors" {} ''
+        mkdir -p $out/etc/OpenCL/vendors
+        cp ${packages.${system}.mesa.opencl}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
+        cp ${packages.${system}.oclcpuexp-bin}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
+        cp ${packages.${system}.pocl}/etc/OpenCL/vendors/* $out/etc/OpenCL/vendors
+      '';
+
+      # Otherwise pocl cannot find -lgcc
+      libgcc = pkgs.runCommand "libgcc" {} ''
+        mkdir -p $out/lib
+        cp ${pkgs.gcc-unwrapped}/lib/gcc/x86_64-unknown-linux-gnu/*/libgcc.a $out/lib/libgcc.a
+      '';
     };
 
-    devShells.${system} = let
-      mkEnv = {
-        name,
-        driver,
-        extraPkgs ? [],
-        env ? {},
-      }: pkgs.mkShell {
-        inherit name;
+    devShells.${system}.default = pkgs.mkShell {
+      name = "zig-spirv";
 
-        nativeBuildInputs = [
-          pkgs.khronos-ocl-icd-loader
-          pkgs.clinfo
-          pkgs.opencl-headers
-          pkgs.spirv-tools
-          pkgs.gdb
-          packages.${system}.spirv-llvm-translator
-          packages.${system}.shady
-          packages.${system}.spirv2clc
-        ] ++ extraPkgs;
+      nativeBuildInputs = [
+        pkgs.khronos-ocl-icd-loader
+        pkgs.clinfo
+        pkgs.opencl-headers
+        pkgs.spirv-tools
+        pkgs.gdb
+        pkgs.gcc-unwrapped.lib
+        packages.${system}.spirv-llvm-translator
+        packages.${system}.shady
+        packages.${system}.spirv2clc
+        packages.${system}.libgcc
+      ];
 
-        OCL_ICD_VENDORS = "${driver}/etc/OpenCL/vendors";
-
-        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.khronos-ocl-icd-loader pkgs.gcc-unwrapped ];
-      } // env;
-    in rec {
-      intel = mkEnv {
-        name = "zig-spirv-intel";
-        driver = packages.${system}.oclcpuexp-bin;
-      };
-
-      rusticl = mkEnv {
-        name = "zig-spirv-rusticl";
-        driver = packages.${system}.mesa.opencl;
-        env = {
-          RUSTICL_ENABLE = "swrast:0,radeonsi:0";
-        };
-      };
-
-      pocl = let
-        # Otherwise pocl cannot find -lgcc
-        libgcc = pkgs.runCommand "libgcc" {} ''
-          mkdir -p $out/lib
-          cp ${pkgs.gcc-unwrapped}/lib/gcc/x86_64-unknown-linux-gnu/*/libgcc.a $out/lib/libgcc.a
-        '';
-      in mkEnv {
-        name = "zig-spirv-pocl";
-        driver = packages.${system}.pocl;
-        extraPkgs = [
-          pkgs.gcc-unwrapped.lib
-          libgcc
-        ];
-      };
-
-      default = intel;
+      OCL_ICD_VENDORS = "${packages.${system}.ocl-vendors}/etc/OpenCL/vendors";
+      RUSTICL_ENABLE = "swrast:0,radeonsi:0";
+      LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+        pkgs.khronos-ocl-icd-loader
+        pkgs.gcc-unwrapped
+      ];
     };
   };
 }
