@@ -38,13 +38,13 @@
         inherit spirv-llvm-translator meson;
         llvmPackages = pkgs.llvmPackages_17;
       }).overrideAttrs (old: {
-        version = "24.01.07-git";
+        version = "24.02.09-git";
         src = pkgs.fetchFromGitLab {
           domain = "gitlab.freedesktop.org";
           owner = "mesa";
           repo = "mesa";
-          rev = "a84729d36866bc79619523065a6038c3d8444f97";
-          hash = "sha256-TzQDobHhyLuCD/M2xsAwnWIsagfOVkBzvLuzeLrYcFw=";
+          rev = "cd6d9c5918feabe18a58f6b1096a55c1970d0883";
+          hash = "sha256-k/+JTb6kvw8kKOe5raSpDr81atQgrSLmB0bEn097r1U=";
         };
         # Set some extra flags to create an extra slim build
         mesonFlags = (old.mesonFlags or [ ]) ++ [
