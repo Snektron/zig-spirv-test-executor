@@ -48,7 +48,7 @@ class Test:
         else:
             self.name = '(unknown)'
 
-        self.flaky = 'flaky' in test_line
+        self.flaky = 'flaky' in test_check or 'function pointers' in test_check
         self.generated = COMMENT in test_check
         self.test_check_index = test_check_index
 
@@ -118,7 +118,7 @@ class TestFile:
             if line.startswith('test '):
                 test = tests[i]
                 i += 1
-            elif SKIP_LINE in line and (test.error is None or not test.execute):
+            elif SKIP_LINE in line and (test.error is None or not test.execute) and not test.flaky:
                 continue
 
             new_test.append(line)
@@ -174,6 +174,10 @@ def run_test(test, tmp_path, tmp_file):
         '--test-cmd',
         os.path.join(basedir, 'zig-out', 'bin', 'zig-spirv-executor'),
         '--test-cmd-bin',
+        '--test-cmd',
+        '--platform',
+        '--test-cmd',
+        'rusticl',
     ], capture_output=True)
 
     if result.returncode == 0:
@@ -212,9 +216,9 @@ def run_test(test, tmp_path, tmp_file):
                 elif 'TODO: ' in ln:
                     todos.append(ln.split('TODO: ')[1])
             if len(tags) != 0:
-                error = 'missing air tags ' + ', '.join(tags)
+                error = 'missing air tags: ' + ', '.join(set(tags))
             elif len(todos) != 0:
-                error = 'todo ' + ', '.join(todos)
+                error = 'todo ' + ', '.join(set(todos))
             else:
                 error = 'unknown'
 
@@ -222,7 +226,8 @@ def run_test(test, tmp_path, tmp_file):
 
 
 def process(test):
-    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.zig')
+    file_name = os.path.basename(test.test_file.path)
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix=file_name)
     with tmp as f:
         run_test(test, tmp.name, f)
     return test
@@ -263,7 +268,10 @@ with Pool() as p:
             if new_tests[path][i].test_index == test.test_index:
                 new_tests[path][i] = test
 
-print(f'{total_passed} passed, {len(all_todo) - total_passed} failed - {total_passed / len(all_todo) * 100:.2f}% passing')
+if len(all_todo) == 0:
+    print('no tests to execute')
+else:
+    print(f'{total_passed} passed, {len(all_todo) - total_passed} failed - {total_passed / len(all_todo) * 100:.2f}% passing')
 
 for path, test_file in test_files.items():
     test_file.update(new_tests[path])
