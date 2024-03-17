@@ -27,9 +27,9 @@ const spirv = struct {
     };
 };
 
-pub const std_options = struct {
-    pub const log_level = .debug;
-    pub const logFn = log;
+pub const std_options: std.Options = .{
+    .log_level = .debug,
+    .logFn = log,
 };
 
 var log_verbose: bool = false;
@@ -46,6 +46,13 @@ pub fn log(
         std.debug.print(prefix ++ ": " ++ format ++ "\n", args);
     }
 }
+
+const KnownPlatform = enum {
+    intel,
+    pocl,
+    rusticl,
+    unknown,
+};
 
 fn fail(comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
@@ -127,7 +134,7 @@ const Options = struct {
     reducing: bool,
     verbose: bool,
     module: []const u8,
-    pocl_workaround: bool,
+    disable_workarounds: bool,
 };
 
 fn parseArgs(arena: Allocator) !Options {
@@ -140,7 +147,7 @@ fn parseArgs(arena: Allocator) !Options {
     var help: bool = false;
     var module: ?[]const u8 = null;
     var reducing: bool = false;
-    var pocl_workaround: bool = false;
+    var disable_workarounds: bool = false;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--platform") or std.mem.eql(u8, arg, "-p")) {
@@ -153,8 +160,8 @@ fn parseArgs(arena: Allocator) !Options {
             help = true;
         } else if (std.mem.eql(u8, arg, "--reducing")) {
             reducing = true;
-        } else if (std.mem.eql(u8, arg, "--pocl-workaround-names")) {
-            pocl_workaround = true;
+        } else if (std.mem.eql(u8, arg, "--disable-workarounds")) {
+            disable_workarounds = true;
         } else if (module == null) {
             module = arg;
         } else {
@@ -194,9 +201,8 @@ fn parseArgs(arena: Allocator) !Options {
             \\--reducing                Enable 'reducing' mode. This mode makes the executor
             \\                          always return 0 so that compile errors may be
             \\                          reduced with spirv-reduce and ./reduce-segv.sh.
-            \\--pocl-workaround-names   Work around a crash in POCL if the entry point contains
-            \\                          special characters. This renames those entry points so
-            \\                          that they no longer crash.
+            \\--disable-workarounds     Do not pre-process the module to work around
+            \\                          platform-specific bugs.
             \\--help -h                 Show this message and exit.
             \\
         );
@@ -209,16 +215,16 @@ fn parseArgs(arena: Allocator) !Options {
         .verbose = verbose,
         .reducing = reducing,
         .module = module orelse fail("missing required argument <spir-v module path>", .{}),
-        .pocl_workaround = pocl_workaround,
+        .disable_workarounds = disable_workarounds,
     };
 }
 
-fn platformName(arena: Allocator, platform: c.cl_platform_id) ![]const u8 {
+fn platformName(arena: Allocator, platform: c.cl_platform_id) ![:0]const u8 {
     var name_size: usize = undefined;
     try checkCl(c.clGetPlatformInfo(platform, c.CL_PLATFORM_NAME, 0, null, &name_size));
     const name = try arena.alloc(u8, name_size);
     try checkCl(c.clGetPlatformInfo(platform, c.CL_PLATFORM_NAME, name_size, name.ptr, null));
-    return name;
+    return name[0..name_size - 1 :0];
 }
 
 fn platformDevices(arena: Allocator, platform: c.cl_platform_id) ![]const c.cl_device_id {
@@ -257,12 +263,12 @@ fn deviceSupportsSpirv(arena: Allocator, device: c.cl_device_id) !bool {
     return false;
 }
 
-fn deviceName(arena: Allocator, device: c.cl_device_id) ![]const u8 {
+fn deviceName(arena: Allocator, device: c.cl_device_id) ![:0]const u8 {
     var name_size: usize = undefined;
     try checkCl(c.clGetDeviceInfo(device, c.CL_DEVICE_NAME, 0, null, &name_size));
     const name = try arena.alloc(u8, name_size);
     try checkCl(c.clGetDeviceInfo(device, c.CL_DEVICE_NAME, name_size, name.ptr, null));
-    return name;
+    return name[0..name_size - 1 :0];
 }
 
 fn pickDevice(arena: Allocator, platform: c.cl_platform_id, query: ?[]const u8) !c.cl_device_id {
@@ -573,6 +579,22 @@ pub fn main() !u8 {
         log_verbose = true;
     }
 
+    std.log.debug("initializing OpenCL", .{});
+
+    var platform: c.cl_platform_id = undefined;
+    var device: c.cl_device_id = undefined;
+    try pickPlatformAndDevice(arena, options, &platform, &device);
+
+    const platform_name = try platformName(arena, platform);
+    const known_platform: KnownPlatform = if (std.mem.eql(u8, "Intel(R) OpenCL", platform_name))
+        .intel
+    else if (std.mem.eql(u8, "Portable Computing Language", platform_name))
+        .pocl
+    else if (std.mem.eql(u8, "rusticl", platform_name))
+        .rusticl
+    else
+        .unknown;
+
     std.log.debug("loading spir-v module '{s}'", .{options.module});
 
     const module_bytes = std.fs.cwd().readFileAllocOptions(
@@ -634,7 +656,7 @@ pub fn main() !u8 {
                     // n: interface (variable)
                     const name_ptr = std.mem.sliceAsBytes(inst.operands[2..]);
                     const name = std.mem.sliceTo(name_ptr, 0);
-                    if (options.pocl_workaround) {
+                    if (!options.disable_workarounds and known_platform == .pocl) {
                         for (name) |*char| {
                             switch (char.*) {
                                 '@', '/' => char.* = ' ',
@@ -691,10 +713,6 @@ pub fn main() !u8 {
         // Nothing to test.
         return 0;
     }
-
-    var platform: c.cl_platform_id = undefined;
-    var device: c.cl_device_id = undefined;
-    try pickPlatformAndDevice(arena, options, &platform, &device);
 
     var status: c.cl_int = undefined;
 
