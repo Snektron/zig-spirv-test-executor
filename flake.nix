@@ -38,13 +38,13 @@
         inherit spirv-llvm-translator meson;
         llvmPackages = pkgs.llvmPackages_17;
       }).overrideAttrs (old: {
-        version = "24.02.09-git";
+        version = "24.03.17-git";
         src = pkgs.fetchFromGitLab {
           domain = "gitlab.freedesktop.org";
           owner = "mesa";
           repo = "mesa";
-          rev = "cd6d9c5918feabe18a58f6b1096a55c1970d0883";
-          hash = "sha256-k/+JTb6kvw8kKOe5raSpDr81atQgrSLmB0bEn097r1U=";
+          rev = "eac703f69128d5aa6879c9becbad627ce08a7920";
+          hash = "sha256-S0iR/WqMHXa5E5ZinJgt7mWFCHheBLyvuIVnU/E9gKc=";
         };
         # Set some extra flags to create an extra slim build
         mesonFlags = (old.mesonFlags or [ ]) ++ [
@@ -254,7 +254,7 @@
       ];
 
       OCL_ICD_VENDORS = "${packages.${system}.ocl-vendors}/etc/OpenCL/vendors";
-      RUSTICL_ENABLE = "swrast:0,radeonsi:0";
+      RUSTICL_ENABLE = "swrast:0"; # Don't enable radeonsi:0 by default because if something goes wrong it may crash the host
       LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
         pkgs.khronos-ocl-icd-loader
         pkgs.gcc-unwrapped
