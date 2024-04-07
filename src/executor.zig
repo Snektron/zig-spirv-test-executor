@@ -141,9 +141,9 @@ fn parseArgs(arena: Allocator) !Options {
     var args = try std.process.argsWithAllocator(arena);
     _ = args.next(); // executable name
 
-    var platform: ?[]const u8 = std.os.getenv("ZVX_PLATFORM");
-    var device: ?[]const u8 = std.os.getenv("ZVX_DEVICE");
-    var verbose: bool = std.os.getenv("ZVX_VERBOSE") != null;
+    var platform: ?[]const u8 = std.posix.getenv("ZVX_PLATFORM");
+    var device: ?[]const u8 = std.posix.getenv("ZVX_DEVICE");
+    var verbose: bool = std.posix.getenv("ZVX_VERBOSE") != null;
     var help: bool = false;
     var module: ?[]const u8 = null;
     var reducing: bool = false;
@@ -465,7 +465,7 @@ const InstructionIterator = struct {
     }
 };
 
-fn validateModule(module: []u32) void {
+fn validateModule(a: Allocator, module: []u32) !void {
     const context = c.spvContextCreate(c.SPV_ENV_UNIVERSAL_1_5); // TODO: Use OpenCL environments?
     std.debug.assert(context != null); // Assume the context is always valid.
     defer c.spvContextDestroy(context);
@@ -553,6 +553,9 @@ fn validateModule(module: []u32) void {
     if (maybe_pos) |pos| {
         if (maybe_source_file) |file| {
             std.log.err("at {s}:{}:{}", .{ file, pos.line, pos.column });
+
+            try dumpSourceLine(a, file, pos.line, pos.column);
+
         } else {
             std.log.err("at <unknown>:{}:{}", .{ pos.line, pos.column });
         }
@@ -567,6 +570,30 @@ fn validateModule(module: []u32) void {
     }
 
     std.process.exit(1);
+}
+
+fn dumpSourceLine(a: Allocator, path: []const u8, line: u32, column: u32) !void {
+    const source = std.fs.cwd().readFileAlloc(a, path, std.math.maxInt(usize)) catch |err| {
+        std.log.debug("couldn't open source file: {s}", .{@errorName(err)});
+        return;
+    };
+
+    var it = std.mem.splitScalar(u8, source, '\n');
+    var line_index: usize = 0;
+    while (it.next()) |text| {
+        line_index += 1;
+        if (line_index != line)
+            continue;
+
+       const padding = try a.alloc(u8, column - 1);
+       defer a.free(padding);
+       @memset(padding, ' ');
+
+       std.log.err("{s}", .{text});
+       std.log.err("{s}^", .{padding});
+
+       break;
+    }
 }
 
 pub fn main() !u8 {
@@ -622,7 +649,7 @@ pub fn main() !u8 {
         fail("invalid spir-v magic", .{});
     }
 
-    validateModule(module);
+    try validateModule(arena, module);
 
     std.log.debug("scanning module for entry points", .{});
 
