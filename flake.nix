@@ -11,22 +11,12 @@
     pkgs = nixpkgs.legacyPackages.${system};
   in rec {
     packages.${system} = rec {
-      spirv-llvm-translator = (pkgs.spirv-llvm-translator.override {
+      spirv-llvm-translator_17 = (pkgs.spirv-llvm-translator.override {
         inherit (pkgs.llvmPackages_17) llvm;
       });
 
-      meson = pkgs.meson.overrideAttrs (old: rec {
-        version = "1.3.1";
-
-        src = pkgs.fetchFromGitHub {
-          owner = "mesonbuild";
-          repo = "meson";
-          rev = "refs/tags/${version}";
-          hash = "sha256-KNNtHi3jx0MRiOgmluA4ucZJWB2WeIYdApfHuspbCqg=";
-        };
-
-        # The latest patch is already applied, so remove it here.
-        patches = (pkgs.lib.reverseList (builtins.tail (pkgs.lib.reverseList old.patches)));
+      spirv-llvm-translator_18 = (pkgs.spirv-llvm-translator.override {
+        inherit (pkgs.llvmPackages_18) llvm;
       });
 
       mesa = (pkgs.mesa.override {
@@ -35,7 +25,7 @@
         vulkanLayers = [ ];
         withValgrind = false;
         enableGalliumNine = false;
-        inherit spirv-llvm-translator meson;
+        spirv-llvm-translator = spirv-llvm-translator_17;
         llvmPackages = pkgs.llvmPackages_17;
       }).overrideAttrs (old: {
         version = "24.03.17-git";
@@ -62,14 +52,14 @@
         patches = [ ./patches/mesa-opencl.patch ./patches/mesa-disk-cache-key.patch ./patches/mesa-rusticl-bindgen-cpp17.patch ];
       });
 
-      oclcpuexp-bin = pkgs.callPackage ({ stdenv, fetchurl, autoPatchelfHook, zlib, tbb_2021_8, libxml2 }:
+      oclcpuexp-bin = pkgs.callPackage ({ stdenv, fetchurl, autoPatchelfHook, zlib, tbb_2021_11, libxml2 }:
       stdenv.mkDerivation {
         pname = "oclcpuexp-bin";
         version = "2023-WW46";
 
         nativeBuildInputs = [ autoPatchelfHook ];
 
-        propagatedBuildInputs = [ zlib tbb_2021_8 libxml2 ];
+        propagatedBuildInputs = [ zlib tbb_2021_11 libxml2 ];
 
         src = fetchurl {
           url = "https://github.com/intel/llvm/releases/download/2023-WW46/oclcpuexp-2023.16.10.0.17_rel.tar.gz";
@@ -101,7 +91,7 @@
         cmake,
         ninja,
         python3,
-        llvmPackages_17,
+        llvmPackages_18,
         ocl-icd,
         libxml2
       }: stdenv.mkDerivation {
@@ -112,23 +102,23 @@
           cmake
           ninja
           python3
-          llvmPackages_17.clang
+          llvmPackages_18.clang
         ];
 
-        buildInputs = with llvmPackages_17; [
+        buildInputs = with llvmPackages_18; [
           llvm
           clang-unwrapped
           clang-unwrapped.lib
           ocl-icd
-          spirv-llvm-translator
+          spirv-llvm-translator_18
           libxml2
         ];
 
         src = fetchFromGitHub {
           owner = "pocl";
           repo = "pocl";
-          rev = "0bffce03b71c2be14ced90019418e943fd770114";
-          hash = "sha256-9Z7WG1r9FqxlQXwuyrTOW4/Y3c7u85rH2qfLJHgmZ3E=";
+          rev = "216815ecf503910711161e024f414ab459fb1cbf";
+          hash = "sha256-1UgHBtA9bEa0XP0gV2uTxWttd/xBQBkw+gIii0ihRuQ=";
         };
 
         postPatch = ''
@@ -247,7 +237,7 @@
         pkgs.spirv-tools
         pkgs.gdb
         pkgs.gcc-unwrapped.lib
-        packages.${system}.spirv-llvm-translator
+        packages.${system}.spirv-llvm-translator_18
         packages.${system}.shady
         packages.${system}.spirv2clc
         packages.${system}.libgcc
