@@ -125,15 +125,15 @@ fn parseArgs(a: Allocator) !Options {
             \\`result` must be set to 1 if the test passes, or left 0 if the test fails.
             \\
             \\Options:
-            \\--platform -p <platform>  OpenCL platform name to use. By default, uses the
+            \\--platform|-p <platform>  OpenCL platform name to use. By default, uses the
             \\                          first platform that has any devices available.
             \\                          Note that the platform must support the
             \\                          'cl_khr_il_program' extension.
-            \\--device -d <device>      OpenCL device name to use. If --platform is left
+            \\--device|-d <device>      OpenCL device name to use. If --platform is left
             \\                          unspecified, all devices of all platforms are
             \\                          matched. By default, uses the first device of the
             \\                          platform.
-            \\--verbose -v              Turn on verbose logging.
+            \\--verbose|-v              Turn on verbose logging.
             \\--reducing                Enable 'reducing' mode. This mode makes the executor
             \\                          always return 0 so that compile errors may be
             \\                          reduced with spirv-reduce and ./reduce-segv.sh.
@@ -141,6 +141,11 @@ fn parseArgs(a: Allocator) !Options {
             \\                          platform-specific bugs.
             \\--help -h                 Show this message and exit.
             \\
+            \\Environment variables:
+            \\ZVTX_PLATFORM=<platform>  Does the same as --platform <platform>.
+            \\ZVTX_DEVICE=<device>      Does the same as --device <device>.
+            \\ZVTX_VERBOSE=<value>      Setting this to anything other than 0 does the same
+            \\                          as passing --verbose.
         );
         std.process.exit(0);
     }
