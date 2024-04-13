@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-./zig-out/bin/zig-spirv-executor $1 --platform ${REDUCE_PLATFORM:-Intel} --reducing
+./zig-out/bin/zig-spirv-test-executor $1 --platform ${REDUCE_PLATFORM:-Intel} --reducing
 
 if [ "$?" -eq 0 ]; then
     echo NOT INTERESTING

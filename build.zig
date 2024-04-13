@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "zig-spirv-executor",
+        .name = "zig-spirv-test-executor",
         .root_source_file = .{ .path = "src/executor.zig" },
         .target = target,
         .optimize = optimize,

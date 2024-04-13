@@ -172,7 +172,7 @@ def run_test(test, tmp_path, tmp_file):
         'generic+Int64+Int16+Int8+Float64+Float16',
         '-fno-llvm',
         '--test-cmd',
-        os.path.join(basedir, 'zig-out', 'bin', 'zig-spirv-executor'),
+        os.path.join(basedir, 'zig-out', 'bin', 'zig-spirv-test-executor'),
         '--test-cmd-bin',
         '--test-cmd',
         '--platform',

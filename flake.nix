@@ -1,5 +1,5 @@
 {
-  description = "spirv test executor flake";
+  description = "zig spirv test executor flake";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs";
@@ -228,7 +228,7 @@
     };
 
     devShells.${system}.default = pkgs.mkShell {
-      name = "zig-spirv";
+      name = "zvtx";
 
       nativeBuildInputs = [
         pkgs.khronos-ocl-icd-loader
@@ -244,7 +244,8 @@
       ];
 
       OCL_ICD_VENDORS = "${packages.${system}.ocl-vendors}/etc/OpenCL/vendors";
-      RUSTICL_ENABLE = "swrast:0"; # Don't enable radeonsi:0 by default because if something goes wrong it may crash the host
+      # Don't enable radeonsi:0 by default because if something goes wrong it may crash the host
+      RUSTICL_ENABLE = "swrast:0";
       LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
         pkgs.khronos-ocl-icd-loader
         pkgs.gcc-unwrapped

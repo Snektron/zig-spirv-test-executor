@@ -74,9 +74,12 @@ fn parseArgs(a: Allocator) !Options {
     var args = try std.process.argsWithAllocator(a);
     _ = args.next(); // executable name
 
-    var platform: ?[]const u8 = std.posix.getenv("ZVX_PLATFORM");
-    var device: ?[]const u8 = std.posix.getenv("ZVX_DEVICE");
-    var verbose: bool = std.posix.getenv("ZVX_VERBOSE") != null;
+    var platform: ?[]const u8 = std.posix.getenv("ZVTX_PLATFORM");
+    var device: ?[]const u8 = std.posix.getenv("ZVTX_DEVICE");
+    var verbose: bool = if (std.posix.getenv("ZVTX_VERBOSE")) |verbose|
+        !std.mem.eql(u8, verbose, "0")
+    else
+        false;
     var help: bool = false;
     var module: ?[]const u8 = null;
     var reducing: bool = false;
@@ -105,14 +108,14 @@ fn parseArgs(a: Allocator) !Options {
     if (help) {
         const out = std.io.getStdOut();
         try out.writer().writeAll(
-            \\usage: zig-spirv-executor [options...] <spir-v module path>
+            \\usage: zig-spirv-test-executor [options...] <spir-v module path>
             \\
             \\This program can be used to execute tests in a SPIR-V binary produced by
             \\`zig test`, together with zig-spirv-runner.zig. For example, to run all tests
             \\in a zig file under spir-v, use
             \\
             \\    zig test \
-            \\        --test-cmd zig-spirv-executor --test-cmd-bin \
+            \\        --test-cmd zig-spirv-test-executor --test-cmd-bin \
             \\        --test-runner src/test_runner.zig \
             \\        file.zig
             \\
