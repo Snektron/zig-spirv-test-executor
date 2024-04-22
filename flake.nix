@@ -147,7 +147,7 @@
         spirv-headers,
         llvmPackages_17,
         libxml2,
-        json_c
+        json_c,
       }: stdenv.mkDerivation {
         pname = "shady";
         version = "0.1";
@@ -155,8 +155,8 @@
         src = fetchFromGitHub {
           owner = "Hugobros3";
           repo = "shady";
-          rev = "fd9595b258e18bf953d9c437654318984898e1e8";
-          sha256 = "sha256-1QFAqL4xa7Z3axigfQu4x1PtDvdFd//9rzz8X90EJfA=";
+          rev = "7c4a114df50a3391cbe27d6c87d1bf8d5cd46d51";
+          sha256 = "sha256-M3wH7itjtAjT486TJNjbHf0lNOpa03A13SadggSnBv8=";
           fetchSubmodules = true;
         };
 
@@ -168,6 +168,7 @@
         buildInputs = [
           spirv-headers
           llvmPackages_17.llvm
+          llvmPackages_17.clang
           libxml2
           json_c
         ];
@@ -177,11 +178,11 @@
           "-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON"
         ];
 
-        installPhase = ''
-          ninja install
-          # slim is not installed by default for some reason
-          mkdir -p $out/bin
-          mv bin/slim $out/bin/slim
+        patches = [ ./patches/shady.patch ];
+
+        postInstall = ''
+          patchelf --allowed-rpath-prefixes /nix --shrink-rpath $out/bin/vcc
+          patchelf --allowed-rpath-prefixes /nix --shrink-rpath $out/bin/slim
         '';
       }) {};
 
