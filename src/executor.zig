@@ -44,8 +44,13 @@ pub fn log(
 ) void {
     _ = scope;
     if (@intFromEnum(level) <= @intFromEnum(std.log.Level.info) or log_verbose) {
-        const prefix = comptime level.asText();
-        std.debug.print(prefix ++ ": " ++ format ++ "\n", args);
+        switch (level) {
+            .info => std.debug.print(format ++ "\n", args),
+            else => {
+                const prefix = comptime level.asText();
+                std.debug.print(prefix ++ ": " ++ format ++ "\n", args);
+            },
+        }
     }
 }
 
@@ -502,6 +507,12 @@ pub fn main() !u8 {
         log_verbose = true;
     }
 
+    const root_node = std.Progress.start(.{
+        .estimated_total_items = 3,
+    });
+    const have_tty = std.io.getStdErr().isTty();
+
+    const init_opencl_node = root_node.start("Initializing OpenCL", 0);
     std.log.debug("initializing OpenCL", .{});
 
     const platform, const device = try pickPlatformAndDevice(a, options);
@@ -521,7 +532,9 @@ pub fn main() !u8 {
     if (known_platform != .unknown) {
         std.log.debug("detected known platform: {s}", .{@tagName(known_platform)});
     }
+    init_opencl_node.end();
 
+    const load_node = root_node.start("Loading SPIR-V module", 0);
     std.log.debug("loading spir-v module '{s}'", .{options.module});
 
     const module_bytes = std.fs.cwd().readFileAllocOptions(
@@ -583,6 +596,8 @@ pub fn main() !u8 {
                     // n: interface (variable)
                     const name_ptr = std.mem.sliceAsBytes(inst.operands[2..]);
                     const name = std.mem.sliceTo(name_ptr, 0);
+                    if (std.mem.eql(u8, name, "main")) continue;
+
                     if (!options.disable_workarounds and known_platform == .pocl) {
                         for (name) |*char| {
                             switch (char.*) {
@@ -653,7 +668,10 @@ pub fn main() !u8 {
     const program = try cl.Program.createWithIL(context, module_bytes);
     defer program.release();
 
-    std.log.debug("building program", .{});
+    load_node.end();
+
+    const compile_node = root_node.start("Compiling SPIR-V kernels", 0);
+    std.log.debug("compiling spir-v kernels", .{});
     program.build(&.{device}, "") catch |err| switch (err) {
         error.BuildProgramFailure => {
             const build_log = try program.getBuildLog(a, device);
@@ -661,26 +679,35 @@ pub fn main() !u8 {
         },
         else => return err,
     };
+    compile_node.end();
 
     std.log.debug("program built successfully", .{});
 
     const buf = try cl.Buffer(u16).create(context, .{ .read_write = true }, 1);
     defer buf.release();
 
-    var progress = std.Progress{};
-    const root_node = progress.start("Test", entry_points.count());
-
     var ok_count: usize = 0;
     var fail_count: usize = 0;
     var skip_count: usize = 0;
-    for (entry_points.values()) |name| {
-        var test_node = root_node.start(name, 0);
-        test_node.activate();
+    const total_count = entry_points.count();
+
+    const test_root_node = root_node.start("Test", total_count);
+
+    for (entry_points.values(), 0..) |name, i| {
+        const test_node = test_root_node.start(name, 0);
         defer test_node.end();
-        progress.refresh();
+
+        const log_prefix = "[{d}/{d}] {s}...";
+        const log_prefix_args = .{ i + 1, total_count, name };
+
+        if (!have_tty) {
+            std.log.info(log_prefix, log_prefix_args);
+        }
 
         const error_code, const runtime = launchTestKernel(queue, program, buf, name) catch |err| {
-            progress.log("FAIL (OpenCL: {s})\n", .{@errorName(err)});
+            if (have_tty) {
+                std.log.info(log_prefix ++ "FAIL (OpenCL: {s})", log_prefix_args ++ .{ @errorName(err) });
+            }
             fail_count += 1;
             continue;
         };
@@ -693,26 +720,27 @@ pub fn main() !u8 {
             ok_count += 1;
         } else if (std.mem.eql(u8, error_name, "SkipZigTest")) {
             skip_count += 1;
-            progress.log("SKIP\n", .{});
+            std.log.info(log_prefix ++ "SKIP", log_prefix_args);
         } else {
             fail_count += 1;
-            progress.log("FAIL ({s} {})\n", .{ error_name, error_code });
             if (error_code == poison_error_code) {
-                progress.log("Kernel didn't write to error code pointer", .{});
+                std.log.info(log_prefix ++ "FAIL (Kernel didn't write to error code pointer)", log_prefix_args);
+            } else {
+                std.log.info(log_prefix ++ "FAIL ({s} {})", log_prefix_args ++ .{ error_name, error_code });
             }
         }
 
         if (log_verbose) {
-            progress.log("runtime: {}us\n", .{runtime});
+            std.log.info(log_prefix ++ "runtime: {}us", log_prefix_args ++ .{ runtime });
         }
     }
 
-    root_node.end();
+    test_root_node.end();
 
     if (ok_count == entry_points.count()) {
-        std.debug.print("All {} tests passed.\n", .{ok_count});
+        std.log.info("All {} tests passed.", .{ok_count});
     } else {
-        std.debug.print("{} passed; {} skipped; {} failed.\n", .{ ok_count, skip_count, fail_count });
+        std.log.info("{} passed; {} skipped; {} failed.", .{ ok_count, skip_count, fail_count });
     }
 
     return @intFromBool(!options.reducing and fail_count != 0);
