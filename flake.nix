@@ -11,10 +11,6 @@
     pkgs = nixpkgs.legacyPackages.${system};
   in rec {
     packages.${system} = rec {
-      spirv-llvm-translator_17 = (pkgs.spirv-llvm-translator.override {
-        inherit (pkgs.llvmPackages_17) llvm;
-      });
-
       spirv-llvm-translator_18 = (pkgs.spirv-llvm-translator.override {
         inherit (pkgs.llvmPackages_18) llvm;
       });
@@ -25,16 +21,16 @@
         vulkanLayers = [ ];
         withValgrind = false;
         enableGalliumNine = false;
-        spirv-llvm-translator = spirv-llvm-translator_17;
-        llvmPackages = pkgs.llvmPackages_17;
+        spirv-llvm-translator = spirv-llvm-translator_18;
+        llvmPackages = pkgs.llvmPackages_18;
       }).overrideAttrs (old: {
-        version = "24.03.17-git";
+        version = "24.05.30-git";
         src = pkgs.fetchFromGitLab {
           domain = "gitlab.freedesktop.org";
           owner = "mesa";
           repo = "mesa";
-          rev = "eac703f69128d5aa6879c9becbad627ce08a7920";
-          hash = "sha256-S0iR/WqMHXa5E5ZinJgt7mWFCHheBLyvuIVnU/E9gKc=";
+          rev = "57307df76637cda99889081730a99c0c214c2293";
+          hash = "sha256-jRmZikRg90vk7m4wtqP1lFp+FSPxUSJvqk+8eg7xMlk=";
         };
         # Set some extra flags to create an extra slim build
         mesonFlags = (old.mesonFlags or [ ]) ++ [
@@ -145,7 +141,7 @@
         cmake,
         ninja,
         spirv-headers,
-        llvmPackages_17,
+        llvmPackages_18,
         libxml2,
         json_c,
       }: stdenv.mkDerivation {
@@ -155,8 +151,8 @@
         src = fetchFromGitHub {
           owner = "Hugobros3";
           repo = "shady";
-          rev = "7c4a114df50a3391cbe27d6c87d1bf8d5cd46d51";
-          sha256 = "sha256-M3wH7itjtAjT486TJNjbHf0lNOpa03A13SadggSnBv8=";
+          rev = "75f5984b29d6e25ad736ddb288730f8eec1d6ed3";
+          sha256 = "sha256-eFnyIFyfM0rzCA0+1esWJH5V8P2L1iJEmAYvHTsp2t0=";
           fetchSubmodules = true;
         };
 
@@ -167,8 +163,8 @@
 
         buildInputs = [
           spirv-headers
-          llvmPackages_17.llvm
-          llvmPackages_17.clang
+          llvmPackages_18.clang
+          llvmPackages_18.llvm
           libxml2
           json_c
         ];
@@ -217,6 +213,7 @@
       ocl-vendors = pkgs.runCommand "ocl-vendors" {} ''
         mkdir -p $out/etc/OpenCL/vendors
         cp ${packages.${system}.mesa.opencl}/etc/OpenCL/vendors/rusticl.icd $out/etc/OpenCL/vendors/
+        cp ${pkgs.rocm-opencl-icd}/etc/OpenCL/vendors/amdocl64.icd  $out/etc/OpenCL/vendors/
         cp ${packages.${system}.oclcpuexp-bin}/etc/OpenCL/vendors/intelocl64.icd $out/etc/OpenCL/vendors/
         cp ${packages.${system}.pocl}/etc/OpenCL/vendors/pocl.icd $out/etc/OpenCL/vendors/
       '';
@@ -250,7 +247,26 @@
       LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
         pkgs.khronos-ocl-icd-loader
         pkgs.gcc-unwrapped
+        pkgs.xorg.libxcb
+        pkgs.xorg.libX11
+        pkgs.xorg.libXext
+        pkgs.xorg.libXrender
+        pkgs.xorg.libXrandr
       ];
+
+      LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+        pkgs.xorg.libxcb
+        pkgs.xorg.libX11
+        pkgs.xorg.libXext
+        pkgs.xorg.libXrender
+        pkgs.xorg.libXrandr
+      ];
+
+      # Make sure that zig-spirv-test-executor is available on the path after building, that enables us
+      # to just run zig build test -fzvtx.
+      shellHook = ''
+        export PATH="zig-out/bin/:$PATH"
+      '';
     };
   };
 }
