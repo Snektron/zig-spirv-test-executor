@@ -177,7 +177,7 @@ def run_test(test, tmp_path, tmp_file):
         '--test-cmd',
         '--platform',
         '--test-cmd',
-        'Intel',
+        'Portable',
     ], capture_output=True)
 
     if result.returncode == 0:
