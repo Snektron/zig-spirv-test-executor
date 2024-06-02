@@ -601,7 +601,10 @@ pub fn main() !u8 {
                     if (!options.disable_workarounds and known_platform == .pocl) {
                         for (name) |*char| {
                             switch (char.*) {
-                                '@', '/' => char.* = ' ',
+                                '@', '/' => {
+                                    std.log.debug("fixing up kernel name for pocl: {s}", .{});
+                                    char.* = ' ',
+                                },
                                 else => {},
                             }
                         }

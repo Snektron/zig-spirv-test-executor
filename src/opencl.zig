@@ -79,7 +79,7 @@ pub fn getPlatforms(a: Allocator) ![]const Platform {
 pub const Platform = extern struct {
     id: c.cl_platform_id,
 
-    pub fn getName(platform: Platform, a: Allocator) ![]const u8 {
+    pub fn getName(platform: Platform, a: Allocator) ![:0]const u8 {
         var name_size: usize = undefined;
         switch (c.clGetPlatformInfo(platform.id, c.CL_PLATFORM_NAME, 0, null, &name_size)) {
             c.CL_SUCCESS => {},
@@ -92,14 +92,14 @@ pub const Platform = extern struct {
         const name = try a.alloc(u8, name_size);
         errdefer a.free(name);
 
-        switch (c.clGetPlatformInfo(platform.id, c.CL_PLATFORM_NAME, name_size, name.ptr, null)) {
+        switch (c.clGetPlatformInfo(platform.id, c.CL_PLATFORM_NAME, name.len, name.ptr, null)) {
             c.CL_SUCCESS => {},
             c.CL_INVALID_VALUE => unreachable,
             c.CL_OUT_OF_HOST_MEMORY => return error.OutOfMemory,
             else => @panic("Undocumented error"),
         }
 
-        return name;
+        return name[0..name.len - 1 :0];
     }
 
     pub fn getDevices(platform: Platform, a: Allocator, device_type: DeviceType) ![]const Device {
@@ -168,7 +168,7 @@ pub const Device = extern struct {
         const name = try a.alloc(u8, name_size);
         errdefer a.free(name);
 
-        switch (c.clGetDeviceInfo(device.id, c.CL_DEVICE_NAME, name_size, name.ptr, null)) {
+        switch (c.clGetDeviceInfo(device.id, c.CL_DEVICE_NAME, name.len, name.ptr, null)) {
             c.CL_SUCCESS => {},
             c.CL_INVALID_DEVICE => unreachable,
             c.CL_INVALID_VALUE => unreachable,
@@ -176,7 +176,8 @@ pub const Device = extern struct {
             c.CL_OUT_OF_HOST_MEMORY => return error.OutOfMemory,
             else => @panic("Undocumented error"),
         }
-        return name;
+
+        return name[0..name.len - 1 :0];
     }
 
     pub fn getILsWithVersion(device: Device, a: Allocator) ![]const NameVersion {
