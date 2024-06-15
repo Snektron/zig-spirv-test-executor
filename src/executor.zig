@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const cl = @import("opencl.zig");
+const cl = @import("opencl");
 
 const c = @cImport({
     @cInclude("spirv-tools/libspirv.h");
@@ -300,7 +300,7 @@ fn launchTestKernel(
         &.{},
     );
 
-    try kernel.setArg(cl.Buffer(u16), 0, &err_buf);
+    try kernel.setArg(cl.Buffer(u16), 0, err_buf);
     const kernel_complete = try queue.enqueueNDRangeKernel(
         kernel,
         null,

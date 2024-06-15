@@ -4,14 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const opencl = b.dependency("opencl", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("opencl");
+
     const exe = b.addExecutable(.{
         .name = "zig-spirv-test-executor",
         .root_source_file = b.path("src/executor.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
-    exe.linkLibC();
-    exe.linkSystemLibrary("OpenCL");
+    exe.root_module.addImport("opencl", opencl);
     exe.linkSystemLibrary("SPIRV-Tools-shared");
     b.installArtifact(exe);
 
