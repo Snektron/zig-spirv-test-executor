@@ -601,10 +601,7 @@ pub fn main() !u8 {
                     if (!options.disable_workarounds and known_platform == .pocl) {
                         for (name) |*char| {
                             switch (char.*) {
-                                '@', '/' => {
-                                    std.log.debug("fixing up kernel name for pocl: {s}", .{});
-                                    char.* = ' ',
-                                },
+                                '@', '/' => char.* = ' ',
                                 else => {},
                             }
                         }
@@ -642,7 +639,7 @@ pub fn main() !u8 {
         };
 
         var names = std.ArrayList([]const u8).init(a);
-        var it = std.mem.split(u8, error_names, ":");
+        var it = std.mem.splitScalar(u8, error_names, ':');
         while (it.next()) |unescaped_name| {
             // Zig error names are escaped here in URI-formatting. Unescape them so we can use them.
             const name = try a.alloc(u8, unescaped_name.len);
