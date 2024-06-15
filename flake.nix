@@ -113,8 +113,8 @@
         src = fetchFromGitHub {
           owner = "pocl";
           repo = "pocl";
-          rev = "216815ecf503910711161e024f414ab459fb1cbf";
-          hash = "sha256-1UgHBtA9bEa0XP0gV2uTxWttd/xBQBkw+gIii0ihRuQ=";
+          rev = "f17d6c5d4f43adf3e292f6903b31b059937e7e87";
+          hash = "sha256-8f/IjO/3ZgQmSUlMDERc6cwJeXMKuEHgjb9WYFmLR1Y=";
         };
 
         postPatch = ''
@@ -213,7 +213,7 @@
       ocl-vendors = pkgs.runCommand "ocl-vendors" {} ''
         mkdir -p $out/etc/OpenCL/vendors
         cp ${packages.${system}.mesa.opencl}/etc/OpenCL/vendors/rusticl.icd $out/etc/OpenCL/vendors/
-        cp ${pkgs.rocm-opencl-icd}/etc/OpenCL/vendors/amdocl64.icd  $out/etc/OpenCL/vendors/
+        cp ${pkgs.rocm-opencl-icd}/etc/OpenCL/vendors/amdocl64.icd $out/etc/OpenCL/vendors/
         cp ${packages.${system}.oclcpuexp-bin}/etc/OpenCL/vendors/intelocl64.icd $out/etc/OpenCL/vendors/
         cp ${packages.${system}.pocl}/etc/OpenCL/vendors/pocl.icd $out/etc/OpenCL/vendors/
       '';

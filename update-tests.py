@@ -131,7 +131,7 @@ class TestFile:
         with open(self.path, 'w') as f:
             f.writelines(new_test)
 
-        subprocess.run([args.compiler, 'fmt', self.path], capture_output=True)
+        # subprocess.run([args.compiler, 'fmt', self.path], capture_output=True)
 
 
 def gather_tests():
