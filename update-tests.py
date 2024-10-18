@@ -14,6 +14,8 @@ ap.add_argument('compiler', type=str, help='Path to Zig compiler')
 ap.add_argument('test', type=str, help='Path to file to test')
 ap.add_argument('--todo', default=False, action='store_true', help='Print the number of tests that still need to be done')
 ap.add_argument('--recheck', default=False, action='store_true', help='Re-check all tests')
+ap.add_argument('--platform', default='Portable', help='Override the OpenCL runtime used for testing')
+ap.add_argument('--timeout', default=30, help='Maximum number of seconds to wait for a test to finish')
 
 args = ap.parse_args()
 
@@ -159,26 +161,30 @@ def run_test(test, tmp_path, tmp_file):
     tmp_file.writelines(test_without_check)
     tmp_file.flush()
 
-    result = subprocess.run([
-        args.compiler,
-        'test',
-        tmp_path,
-        '--test-runner',
-        os.path.join(basedir, 'src', 'test_runner.zig'),
-        '-fno-compiler-rt',
-        '-target',
-        'spirv64-opencl-gnu',
-        '-mcpu',
-        'generic+Int64+Int16+Int8+Float64+Float16',
-        '-fno-llvm',
-        '--test-cmd',
-        os.path.join(basedir, 'zig-out', 'bin', 'zig-spirv-test-executor'),
-        '--test-cmd-bin',
-        '--test-cmd',
-        '--platform',
-        '--test-cmd',
-        'Portable',
-    ], capture_output=True)
+    try:
+        result = subprocess.run([
+            args.compiler,
+            'test',
+            tmp_path,
+            '--test-runner',
+            os.path.join(basedir, 'src', 'test_runner.zig'),
+            '-fno-compiler-rt',
+            '-target',
+            'spirv64-opencl-gnu',
+            '-mcpu',
+            'generic+Int64+Int16+Int8+Float64+Float16',
+            '-fno-llvm',
+            '--test-cmd',
+            os.path.join(basedir, 'zig-out', 'bin', 'zig-spirv-test-executor'),
+            '--test-cmd-bin',
+            '--test-cmd',
+            '--platform',
+            '--test-cmd',
+            args.platform,
+        ], capture_output=True, timeout=args.timeout)
+    except subprocess.TimeoutExpired:
+        test.error = 'timeout expired'
+        return
 
     if result.returncode == 0:
         test.error = None
@@ -255,23 +261,26 @@ for path in all_tests_by_path.keys():
     new_tests[path] = all_tests_by_path[path]
 
 total_passed = 0
-with Pool() as p:
-    for i, test in enumerate(p.imap_unordered(process, all_todo)):
-        if test.error is None:
-            print(f'[{i + 1}/{len(all_todo)}] \x1b[32mPASS\x1b[0m {test.name}')
-            total_passed += 1
-        else:
-            print(f'[{i + 1}/{len(all_todo)}] \x1b[31mFAIL\x1b[0m {test.name} ({test.error})')
+try:
+    with Pool() as p:
+        for i, test in enumerate(p.imap_unordered(process, all_todo)):
+            if test.error is None:
+                print(f'[{i + 1}/{len(all_todo)}] \x1b[32mPASS\x1b[0m {test.name}')
+                total_passed += 1
+            else:
+                print(f'[{i + 1}/{len(all_todo)}] \x1b[31mFAIL\x1b[0m {test.name} ({test.error})')
 
-        path = test.test_file.path
-        for i in range(len(new_tests[path])):
-            if new_tests[path][i].test_index == test.test_index:
-                new_tests[path][i] = test
+            path = test.test_file.path
+            for i in range(len(new_tests[path])):
+                if new_tests[path][i].test_index == test.test_index:
+                    new_tests[path][i] = test
+except KeyboardInterrupt:
+    print('Interrupted!')
+finally:
+    for path, test_file in test_files.items():
+        test_file.update(new_tests[path])
 
 if len(all_todo) == 0:
     print('no tests to execute')
 else:
     print(f'{total_passed} passed, {len(all_todo) - total_passed} failed - {total_passed / len(all_todo) * 100:.2f}% passing')
-
-for path, test_file in test_files.items():
-    test_file.update(new_tests[path])
