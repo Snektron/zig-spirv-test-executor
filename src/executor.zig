@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const cl = @import("opencl");
+const vk = @import("vulkan");
 
 const c = @cImport({
     @cInclude("spirv-tools/libspirv.h");

@@ -9,6 +9,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("opencl");
 
+    const registry = b.dependency("vulkan_headers", .{}).path("registry/vk.xml");
+
+    const vk_gen = b.dependency("vulkan_zig", .{}).artifact("vulkan-zig-generator");
+    const vk_gen_cmd = b.addRunArtifact(vk_gen);
+    vk_gen_cmd.addFileArg(registry);
+
     const exe = b.addExecutable(.{
         .name = "zig-spirv-test-executor",
         .root_source_file = b.path("src/executor.zig"),
@@ -17,6 +23,9 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     exe.root_module.addImport("opencl", opencl);
+    exe.root_module.addAnonymousImport("vulkan", .{
+        .root_source_file = vk_gen_cmd.addOutputFileArg("vk.zig"),
+    });
     exe.linkSystemLibrary("SPIRV-Tools-shared");
     b.installArtifact(exe);
 
