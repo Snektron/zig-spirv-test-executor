@@ -12,6 +12,8 @@ const spirv = struct {
     const Word = u32;
     const magic: Word = 0x07230203;
 
+    const Id = Word;
+
     // magic + version + generator + bound + schema
     const header_size = 5;
 
@@ -367,135 +369,261 @@ const InstructionIterator = struct {
     }
 };
 
-fn validateModule(a: Allocator, module: []u32) !void {
-    const context = c.spvContextCreate(c.SPV_ENV_UNIVERSAL_1_5); // TODO: Use OpenCL environments?
-    std.debug.assert(context != null); // Assume the context is always valid.
-    defer c.spvContextDestroy(context);
-
-    var diagnostic: c.spv_diagnostic = null;
-    defer c.spvDiagnosticDestroy(diagnostic);
-    switch (c.spvValidateBinary(context, module.ptr, module.len, &diagnostic)) {
-        c.SPV_SUCCESS => return,
-        else => |code| if (diagnostic == null) {
-            fail("spirv-tool returned error {} without diagnostic", .{code});
-        },
-    }
-
-    const err_index = diagnostic.*.position.index;
-    const msg = diagnostic.*.@"error";
-
-    // Add 5 to the index to get the line number, as there are some comments with
-    // spirv-dis.
-    std.log.err("validation failed at line {}: {s}", .{ err_index + 5, msg });
-
-    // Attempt to find more details about where this error was generated.
-    const Position = struct {
-        file_id: spirv.Word,
-        line: u32,
-        column: u32,
+const Module = struct {
+    const EntryPoint = struct {
+        id: spirv.Id,
+        name: [:0]u8,
     };
 
-    var maybe_func_id: ?spirv.Word = null;
-    var maybe_pos: ?Position = null;
-    {
-        var it = InstructionIterator.init(module);
-        while (it.next()) |inst| {
-            if (inst.index >= err_index) break;
+    words: []const spirv.Word,
+    entry_points: []const EntryPoint,
+    error_names: []const []const u8,
 
-            switch (inst.opcode) {
-                spirv.OpFunction => {
-                    // 0: result type
-                    // 1: result id
-                    // 2: function control
-                    // 3: function type
-                    maybe_func_id = inst.operands[1];
-                },
-                spirv.OpLine => {
-                    // 0: file
-                    // 1: line
-                    // 2: column
-                    maybe_pos = Position{
-                        .file_id = inst.operands[0],
-                        .line = inst.operands[1],
-                        .column = inst.operands[2],
-                    };
-                },
-                else => {},
+    fn load(a: Allocator, path: []const u8) !Module {
+        std.log.debug("loading spir-v module '{s}'", .{path});
+
+        const module_bytes = std.fs.cwd().readFileAllocOptions(
+            a,
+            path,
+            std.math.maxInt(usize),
+            1 * 1024 * 1024,
+            @alignOf(spirv.Word),
+            null,
+        ) catch |err| {
+            fail("failed to open module '{s}': {s}", .{ path, @errorName(err) });
+        };
+
+        if (module_bytes.len % @sizeOf(spirv.Word) != 0) {
+            fail("file is not a SPIR-V module - module size is not multiple of SPIR-V word size", .{});
+        }
+
+        const module = std.mem.bytesAsSlice(spirv.Word, module_bytes);
+
+        if (module[0] != spirv.magic) {
+            if (@byteSwap(module[0]) == spirv.magic) {
+                fail("zig doesn't produce big-endian SPIR-V binaries", .{});
+            }
+
+            fail("invalid SPIR-V magic", .{});
+        }
+
+        try validate(a, module);
+
+        std.log.debug("scanning module for entry points", .{});
+
+        var entry_points = std.ArrayList(EntryPoint).init(a);
+        var maybe_error_names: ?[]const u8 = null;
+
+        {
+            var it = InstructionIterator.init(module);
+            while (it.next()) |inst| {
+                switch (inst.opcode) {
+                    spirv.OpSourceExtension => {
+                        // OpSourceExtension layout:
+                        // 0: extension name (string literal, variable) <-- we want this
+                        const extension_ptr = std.mem.sliceAsBytes(inst.operands);
+                        const extension = std.mem.sliceTo(extension_ptr, 0);
+                        // Check if the extension has the secret zig-generated prefix.
+                        if (std.mem.startsWith(u8, extension, "zig_errors:")) {
+                            maybe_error_names = extension["zig_errors:".len..];
+                        }
+                    },
+                    spirv.OpEntryPoint => {
+                        // OpEntryPoint layout:
+                        // 0: execution model (1 word)
+                        // 1: function reference (1 word)
+                        // 2: name (string literal, variable) <-- we want this
+                        // n: interface (variable)
+                        const name_ptr = std.mem.sliceAsBytes(inst.operands[2..]);
+                        const name = std.mem.sliceTo(name_ptr, 0);
+                        if (std.mem.eql(u8, name, "main")) continue;
+
+                        try entry_points.append(.{
+                            .id = inst.operands[1],
+                            .name = name_ptr[0..name.len :0],
+                        });
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        const error_names = blk: {
+            const error_names = maybe_error_names orelse {
+                std.log.warn("module does not have OpSourceExtension with Zig error codes", .{});
+                std.log.warn("this does not look like a Zig test module", .{});
+                std.log.warn("executing anyway...", .{});
+                break :blk &[_][]const u8{};
+            };
+
+            var names = std.ArrayList([]const u8).init(a);
+            var it = std.mem.splitScalar(u8, error_names, ':');
+            while (it.next()) |unescaped_name| {
+                // Zig error names are escaped here in URI-formatting. Unescape them so we can use them.
+                const name = try a.alloc(u8, unescaped_name.len);
+                try names.append(std.Uri.percentDecodeBackwards(name, unescaped_name));
+            }
+            break :blk names.items;
+        };
+
+        std.log.debug("module has {} entry point(s)", .{entry_points.items.len});
+        std.log.debug("module has {} error code(s)", .{error_names.len});
+
+        return .{
+            .words = module,
+            .entry_points = entry_points.items,
+            .error_names = error_names,
+        };
+    }
+
+    fn errorName(self: Module, error_code: u32) ?[]const u8 {
+        return if (error_code < self.error_names.len)
+            self.error_names[error_code]
+        else
+            null;
+    }
+
+    fn validate(a: Allocator, module: []u32) !void {
+        const context = c.spvContextCreate(c.SPV_ENV_UNIVERSAL_1_5); // TODO: Use OpenCL environments?
+        std.debug.assert(context != null); // Assume the context is always valid.
+        defer c.spvContextDestroy(context);
+
+        var diagnostic: c.spv_diagnostic = null;
+        defer c.spvDiagnosticDestroy(diagnostic);
+        switch (c.spvValidateBinary(context, module.ptr, module.len, &diagnostic)) {
+            c.SPV_SUCCESS => return,
+            else => |code| if (diagnostic == null) {
+                fail("spirv-tool returned error {} without diagnostic", .{code});
+            },
+        }
+
+        const err_index = diagnostic.*.position.index;
+        const msg = diagnostic.*.@"error";
+
+        // Add 5 to the index to get the line number, as there are some comments with
+        // spirv-dis.
+        std.log.err("validation failed at line {}: {s}", .{ err_index + 5, msg });
+
+        // Attempt to find more details about where this error was generated.
+        const Position = struct {
+            file_id: spirv.Word,
+            line: u32,
+            column: u32,
+        };
+
+        var maybe_func_id: ?spirv.Word = null;
+        var maybe_pos: ?Position = null;
+        {
+            var it = InstructionIterator.init(module);
+            while (it.next()) |inst| {
+                if (inst.index >= err_index) break;
+
+                switch (inst.opcode) {
+                    spirv.OpFunction => {
+                        // 0: result type
+                        // 1: result id
+                        // 2: function control
+                        // 3: function type
+                        maybe_func_id = inst.operands[1];
+                    },
+                    spirv.OpLine => {
+                        // 0: file
+                        // 1: line
+                        // 2: column
+                        maybe_pos = Position{
+                            .file_id = inst.operands[0],
+                            .line = inst.operands[1],
+                            .column = inst.operands[2],
+                        };
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        var maybe_func_name: ?[]const u8 = null;
+        var maybe_source_file: ?[]const u8 = null;
+        {
+            var it = InstructionIterator.init(module);
+            while (it.next()) |inst| {
+                switch (inst.opcode) {
+                    spirv.OpName => if (maybe_func_id) |id| {
+                        // 0: target
+                        // 1: name
+                        if (inst.operands[0] == id) {
+                            const bytes = std.mem.sliceAsBytes(inst.operands[1..]);
+                            maybe_func_name = std.mem.sliceTo(bytes, 0);
+                        }
+                    },
+                    spirv.OpString => if (maybe_pos) |pos| {
+                        // 0: target
+                        // 1: name
+                        if (inst.operands[0] == pos.file_id) {
+                            const bytes = std.mem.sliceAsBytes(inst.operands[1..]);
+                            maybe_source_file = std.mem.sliceTo(bytes, 0);
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        if (maybe_pos) |pos| {
+            if (maybe_source_file) |file| {
+                std.log.err("at {s}:{}:{}", .{ file, pos.line, pos.column });
+
+                try dumpSourceLine(a, file, pos.line, pos.column);
+            } else {
+                std.log.err("at <unknown>:{}:{}", .{ pos.line, pos.column });
+            }
+        }
+
+        if (maybe_func_id) |id| {
+            if (maybe_func_name) |name| {
+                std.log.err("in function %{} ({s})", .{ id, name });
+            } else {
+                std.log.err("in function %{} (<unknown>)", .{id});
+            }
+        }
+
+        std.process.exit(1);
+    }
+
+    fn dumpSourceLine(a: Allocator, path: []const u8, line: u32, column: u32) !void {
+        const source = std.fs.cwd().readFileAlloc(a, path, std.math.maxInt(usize)) catch |err| {
+            std.log.debug("couldn't open source file: {s}", .{@errorName(err)});
+            return;
+        };
+
+        var it = std.mem.splitScalar(u8, source, '\n');
+        var line_index: usize = 0;
+        while (it.next()) |text| {
+            line_index += 1;
+            if (line_index != line)
+                continue;
+
+            const padding = try a.alloc(u8, column - 1);
+            defer a.free(padding);
+            @memset(padding, ' ');
+
+            std.log.err("{s}", .{text});
+            std.log.err("{s}^", .{padding});
+
+            break;
+        }
+    }
+
+    fn fixupKernelNamesForPOCL(self: Module) void {
+        for (self.entry_points) |entry_point| {
+            for (entry_point.name) |*char| {
+                switch (char.*) {
+                    '@', '/' => char.* = ' ',
+                    else => {},
+                }
             }
         }
     }
-
-    var maybe_func_name: ?[]const u8 = null;
-    var maybe_source_file: ?[]const u8 = null;
-    {
-        var it = InstructionIterator.init(module);
-        while (it.next()) |inst| {
-            switch (inst.opcode) {
-                spirv.OpName => if (maybe_func_id) |id| {
-                    // 0: target
-                    // 1: name
-                    if (inst.operands[0] == id) {
-                        const bytes = std.mem.sliceAsBytes(inst.operands[1..]);
-                        maybe_func_name = std.mem.sliceTo(bytes, 0);
-                    }
-                },
-                spirv.OpString => if (maybe_pos) |pos| {
-                    // 0: target
-                    // 1: name
-                    if (inst.operands[0] == pos.file_id) {
-                        const bytes = std.mem.sliceAsBytes(inst.operands[1..]);
-                        maybe_source_file = std.mem.sliceTo(bytes, 0);
-                    }
-                },
-                else => {},
-            }
-        }
-    }
-
-    if (maybe_pos) |pos| {
-        if (maybe_source_file) |file| {
-            std.log.err("at {s}:{}:{}", .{ file, pos.line, pos.column });
-
-            try dumpSourceLine(a, file, pos.line, pos.column);
-        } else {
-            std.log.err("at <unknown>:{}:{}", .{ pos.line, pos.column });
-        }
-    }
-
-    if (maybe_func_id) |id| {
-        if (maybe_func_name) |name| {
-            std.log.err("in function %{} ({s})", .{ id, name });
-        } else {
-            std.log.err("in function %{} (<unknown>)", .{id});
-        }
-    }
-
-    std.process.exit(1);
-}
-
-fn dumpSourceLine(a: Allocator, path: []const u8, line: u32, column: u32) !void {
-    const source = std.fs.cwd().readFileAlloc(a, path, std.math.maxInt(usize)) catch |err| {
-        std.log.debug("couldn't open source file: {s}", .{@errorName(err)});
-        return;
-    };
-
-    var it = std.mem.splitScalar(u8, source, '\n');
-    var line_index: usize = 0;
-    while (it.next()) |text| {
-        line_index += 1;
-        if (line_index != line)
-            continue;
-
-        const padding = try a.alloc(u8, column - 1);
-        defer a.free(padding);
-        @memset(padding, ' ');
-
-        std.log.err("{s}", .{text});
-        std.log.err("{s}^", .{padding});
-
-        break;
-    }
-}
+};
 
 pub fn main() !u8 {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -537,122 +665,13 @@ pub fn main() !u8 {
     const load_node = root_node.start("Loading SPIR-V module", 0);
     std.log.debug("loading spir-v module '{s}'", .{options.module});
 
-    const module_bytes = std.fs.cwd().readFileAllocOptions(
-        a,
-        options.module,
-        std.math.maxInt(usize),
-        1 * 1024 * 1024,
-        @alignOf(spirv.Word),
-        null,
-    ) catch |err| {
-        fail("failed to open module '{s}': {s}", .{ options.module, @errorName(err) });
-    };
+    const module = try Module.load(a, options.module);
 
-    if (module_bytes.len % @sizeOf(spirv.Word) != 0) {
-        fail("file is not a SPIR-V module - module size is not multiple of SPIR-V word size", .{});
+    if (!options.disable_workarounds and known_platform == .pocl) {
+        module.fixupKernelNamesForPOCL();
     }
 
-    const module = std.mem.bytesAsSlice(spirv.Word, module_bytes);
-
-    if (module[0] != spirv.magic) {
-        if (@byteSwap(module[0]) == spirv.magic) {
-            fail("zig doesn't produce big-endian SPIR-V binaries", .{});
-        }
-
-        fail("invalid SPIR-V magic", .{});
-    }
-
-    try validateModule(a, module);
-
-    std.log.debug("scanning module for entry points", .{});
-
-    // Collect all the entry points from the spir-v binary.
-    // Collect some information from the SPIR-V module:
-    // - Entry points (OpEntryPoint)
-    // - Error names (OpSourceExtension that starts with zig_errors:).
-
-    var entry_points = std.AutoArrayHashMap(spirv.Word, [:0]const u8).init(a);
-    var initializers = std.ArrayList(spirv.Word).init(a);
-    var maybe_error_names: ?[]const u8 = null;
-    {
-        var it = InstructionIterator.init(module);
-        while (it.next()) |inst| {
-            switch (inst.opcode) {
-                spirv.OpSourceExtension => {
-                    // OpSourceExtension layout:
-                    // 0: extension name (string literal, variable) <-- we want this
-                    const extension_ptr = std.mem.sliceAsBytes(inst.operands);
-                    const extension = std.mem.sliceTo(extension_ptr, 0);
-                    // Check if the extension has the secret zig-generated prefix.
-                    if (std.mem.startsWith(u8, extension, "zig_errors:")) {
-                        maybe_error_names = extension["zig_errors:".len..];
-                    }
-                },
-                spirv.OpEntryPoint => {
-                    // OpEntryPoint layout:
-                    // 0: execution model (1 word)
-                    // 1: function reference (1 word)
-                    // 2: name (string literal, variable) <-- we want this
-                    // n: interface (variable)
-                    const name_ptr = std.mem.sliceAsBytes(inst.operands[2..]);
-                    const name = std.mem.sliceTo(name_ptr, 0);
-                    if (std.mem.eql(u8, name, "main")) continue;
-
-                    if (!options.disable_workarounds and known_platform == .pocl) {
-                        for (name) |*char| {
-                            switch (char.*) {
-                                '@', '/' => char.* = ' ',
-                                else => {},
-                            }
-                        }
-                    }
-                    try entry_points.put(inst.operands[1], name_ptr[0..name.len :0]);
-                },
-                spirv.OpExecutionMode => {
-                    // OpExecutionMode layout:
-                    // 0: entry point (1 word)
-                    // 1: modes... (n words)
-                    const id = inst.operands[0];
-                    for (inst.operands[1..]) |mode| {
-                        if (@as(spirv.ExecutionMode, @enumFromInt(mode)) == .Initializer) {
-                            try initializers.append(id);
-                            break;
-                        }
-                    }
-                },
-                else => {},
-            }
-        }
-
-        // Make sure that we wont try to execute the initializer as kernel.
-        for (initializers.items) |id| {
-            _ = entry_points.swapRemove(id);
-        }
-    }
-
-    const error_names = blk: {
-        const error_names = maybe_error_names orelse {
-            std.log.warn("module does not have OpSourceExtension with Zig error codes", .{});
-            std.log.warn("this does not look like a Zig test module", .{});
-            std.log.warn("executing anyway...", .{});
-            break :blk &[_][]const u8{};
-        };
-
-        var names = std.ArrayList([]const u8).init(a);
-        var it = std.mem.splitScalar(u8, error_names, ':');
-        while (it.next()) |unescaped_name| {
-            // Zig error names are escaped here in URI-formatting. Unescape them so we can use them.
-            const name = try a.alloc(u8, unescaped_name.len);
-            try names.append(std.Uri.percentDecodeBackwards(name, unescaped_name));
-        }
-        break :blk names.items;
-    };
-
-    std.log.debug("module has {} entry point(s)", .{entry_points.count()});
-    std.log.debug("module has {} initializer(s)", .{initializers.items.len});
-    std.log.debug("module has {} error code(s)", .{error_names.len});
-
-    if (entry_points.count() == 0) {
+    if (module.entry_points.len == 0) {
         // Nothing to test.
         return 0;
     }
@@ -665,7 +684,7 @@ pub fn main() !u8 {
 
     // All spir-v kernels can be launched from the same program.
     // TODO: Check that this function is actually available, and error out otherwise.
-    const program = try cl.Program.createWithIL(context, module_bytes);
+    const program = try cl.Program.createWithIL(context, std.mem.sliceAsBytes(module.words));
     defer program.release();
 
     load_node.end();
@@ -676,6 +695,7 @@ pub fn main() !u8 {
         error.BuildProgramFailure => {
             const build_log = try program.getBuildLog(a, device);
             std.log.err("Failed to build program. Error log: \n{s}\n", .{build_log});
+            std.process.exit(1);
         },
         else => return err,
     };
@@ -689,22 +709,21 @@ pub fn main() !u8 {
     var ok_count: usize = 0;
     var fail_count: usize = 0;
     var skip_count: usize = 0;
-    const total_count = entry_points.count();
 
-    const test_root_node = root_node.start("Test", total_count);
+    const test_root_node = root_node.start("Test", module.entry_points.len);
 
-    for (entry_points.values(), 0..) |name, i| {
-        const test_node = test_root_node.start(name, 0);
+    for (module.entry_points, 0..) |entry_point, i| {
+        const test_node = test_root_node.start(entry_point.name, 0);
         defer test_node.end();
 
         const log_prefix = "[{d}/{d}] {s}...";
-        const log_prefix_args = .{ i + 1, total_count, name };
+        const log_prefix_args = .{ i + 1, module.entry_points.len, entry_point.name };
 
         if (!have_tty) {
             std.log.info(log_prefix, log_prefix_args);
         }
 
-        const error_code, const runtime = launchTestKernel(queue, program, buf, name) catch |err| {
+        const error_code, const runtime = launchTestKernel(queue, program, buf, entry_point.name) catch |err| {
             if (have_tty) {
                 std.log.info(log_prefix ++ "FAIL (OpenCL: {s})", log_prefix_args ++ .{ @errorName(err) });
             }
@@ -712,10 +731,7 @@ pub fn main() !u8 {
             continue;
         };
 
-        const error_name = if (error_code < error_names.len)
-            error_names[error_code]
-        else
-            "unknown error";
+        const error_name = module.errorName(error_code) orelse "unknown error";
         if (error_code == 0) {
             ok_count += 1;
         } else if (std.mem.eql(u8, error_name, "SkipZigTest")) {
@@ -737,7 +753,7 @@ pub fn main() !u8 {
 
     test_root_node.end();
 
-    if (ok_count == entry_points.count()) {
+    if (ok_count == module.entry_points.len) {
         std.log.info("All {} tests passed.", .{ok_count});
     } else {
         std.log.info("{} passed; {} skipped; {} failed.", .{ ok_count, skip_count, fail_count });
