@@ -25,9 +25,17 @@ const spirv = struct {
     const OpEntryPoint = 15;
     const OpExecutionMode = 16;
     const OpFunction = 54;
+    const OpCapability = 17;
 
     const ExecutionMode = enum(Word) {
         Initializer = 33,
+        _,
+    };
+
+    const Capability = enum(Word) {
+        Shader = 1,
+        Kernel = 6,
+        _,
     };
 };
 
@@ -375,7 +383,13 @@ const Module = struct {
         name: [:0]u8,
     };
 
+    const ModuleType = enum {
+        shader,
+        kernel,
+    };
+
     words: []const spirv.Word,
+    module_type: ModuleType,
     entry_points: []const EntryPoint,
     error_names: []const []const u8,
 
@@ -413,11 +427,22 @@ const Module = struct {
 
         var entry_points = std.ArrayList(EntryPoint).init(a);
         var maybe_error_names: ?[]const u8 = null;
+        var module_type: ?ModuleType = null;
 
         {
             var it = InstructionIterator.init(module);
             while (it.next()) |inst| {
                 switch (inst.opcode) {
+                    spirv.OpCapability => {
+                        // OpCapability layout:
+                        // 0: capability
+                        const capability: spirv.Capability = @enumFromInt(inst.operands[0]);
+                        switch (capability) {
+                            .Shader => module_type = .shader,
+                            .Kernel => module_type = .kernel,
+                            _ => {},
+                        }
+                    },
                     spirv.OpSourceExtension => {
                         // OpSourceExtension layout:
                         // 0: extension name (string literal, variable) <-- we want this
@@ -466,11 +491,9 @@ const Module = struct {
             break :blk names.items;
         };
 
-        std.log.debug("module has {} entry point(s)", .{entry_points.items.len});
-        std.log.debug("module has {} error code(s)", .{error_names.len});
-
         return .{
             .words = module,
+            .module_type = module_type orelse fail("kernel has no OpCapability Kernel and no OpCapability Shader", .{}),
             .entry_points = entry_points.items,
             .error_names = error_names,
         };
@@ -614,6 +637,7 @@ const Module = struct {
     }
 
     fn fixupKernelNamesForPOCL(self: Module) void {
+        std.log.debug("fixing up kernel names for pocl", .{});
         for (self.entry_points) |entry_point| {
             for (entry_point.name) |*char| {
                 switch (char.*) {
@@ -666,6 +690,9 @@ pub fn main() !u8 {
     std.log.debug("loading spir-v module '{s}'", .{options.module});
 
     const module = try Module.load(a, options.module);
+    std.log.debug("module type {}", .{module.module_type});
+    std.log.debug("module has {} entry point(s)", .{module.entry_points.len});
+    std.log.debug("module has {} error code(s)", .{module.error_names.len});
 
     if (!options.disable_workarounds and known_platform == .pocl) {
         module.fixupKernelNamesForPOCL();
