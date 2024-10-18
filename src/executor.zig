@@ -65,13 +65,6 @@ pub fn log(
     }
 }
 
-const KnownPlatform = enum {
-    intel,
-    pocl,
-    rusticl,
-    unknown,
-};
-
 fn fail(comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
     std.process.exit(1);
@@ -193,151 +186,6 @@ fn deviceSupportsSpirv(a: Allocator, device: cl.Device) !bool {
     }
 
     return false;
-}
-
-fn pickDevice(a: Allocator, platform: cl.Platform, query: ?[]const u8) !cl.Device {
-    const available_devices = try platform.getDevices(a, cl.DeviceType.all);
-    if (available_devices.len == 0) {
-        return error.NoDevices;
-    }
-
-    if (query) |device_query| {
-        for (available_devices) |device| {
-            const name = try device.getName(a);
-            if (std.mem.indexOf(u8, name, device_query) != null) {
-                if (!try deviceSupportsSpirv(a, device)) {
-                    fail("device '{s}' does not support spir-v ingestion", .{name});
-                }
-                return device;
-            }
-        }
-
-        return error.NoSuchDevice;
-    } else {
-        for (available_devices) |device| {
-            if (try deviceSupportsSpirv(a, device)) {
-                return device;
-            }
-        }
-
-        return error.NoSpirvSupport;
-    }
-}
-
-fn pickPlatformAndDevice(
-    a: Allocator,
-    options: Options,
-) !struct { cl.Platform, cl.Device } {
-    const available_platforms = try cl.getPlatforms(a);
-    std.log.debug("{} platform(s) available", .{available_platforms.len});
-
-    if (available_platforms.len == 0) {
-        fail("no opencl platform available", .{});
-    }
-
-    if (options.platform) |platform_query| {
-        const platform, const name = for (available_platforms) |platform| {
-            const name = try platform.getName(a);
-            if (std.mem.indexOf(u8, name, platform_query) != null) {
-                break .{ platform, name };
-            }
-        } else {
-            fail("no such opencl platform '{s}'", .{platform_query});
-        };
-
-        const device = pickDevice(a, platform, options.device) catch |err| switch (err) {
-            error.NoDevices => fail("no opencl devices available for platform '{s}'", .{name}),
-            error.NoSuchDevice => fail("platform '{s}' has no devices that match '{s}'", .{ name, options.device.? }),
-            error.NoSpirvSupport => fail("platform '{s}' has no devices that support SPIR-V ingestion", .{name}),
-            else => return err,
-        };
-        return .{ platform, device };
-    } else if (options.device) |device_query| {
-        // Loop through all platforms to find one which matches the device
-        var device_found_but_doesnt_have_spirv: ?cl.Platform = null;
-        for (available_platforms) |platform| {
-            const device = pickDevice(a, platform, device_query) catch |err| switch (err) {
-                error.NoDevices, error.NoSuchDevice => continue,
-                error.NoSpirvSupport => {
-                    // There could be other platforms that have this device, so continue,
-                    // but record that we found at least one that matched this name.
-                    device_found_but_doesnt_have_spirv = platform;
-                    continue;
-                },
-                else => return err,
-            };
-
-            return .{ platform, device };
-        }
-
-        if (device_found_but_doesnt_have_spirv) |platform| {
-            const name = try platform.getName(a);
-            fail("platform '{s}' has a device that matches '{s}', but it doesn't support SPIR-V ingestion", .{ name, device_query });
-        } else {
-            fail("no platform has opencl device '{s}'", .{device_query});
-        }
-    } else {
-        for (available_platforms) |platform| {
-            const device = pickDevice(a, platform, null) catch |err| switch (err) {
-                error.NoDevices, error.NoSpirvSupport => continue,
-                error.NoSuchDevice => unreachable,
-                else => return err,
-            };
-            return .{ platform, device };
-        } else {
-            fail("no opencl platform that has any devices which support SPIR-V ingestion", .{});
-        }
-    }
-}
-
-fn launchTestKernel(
-    queue: cl.CommandQueue,
-    program: cl.Program,
-    err_buf: cl.Buffer(u16),
-    name: [*:0]const u8,
-) !struct { u16, cl.ulong } {
-    const kernel = try cl.Kernel.create(program, name);
-    defer kernel.release();
-
-    // Poison the error code buffer with known garbage so
-    // that we know if the kernel didn't write
-
-    const write_complete = try queue.enqueueWriteBuffer(
-        u16,
-        err_buf,
-        false,
-        0,
-        &.{poison_error_code},
-        &.{},
-    );
-
-    try kernel.setArg(cl.Buffer(u16), 0, err_buf);
-    const kernel_complete = try queue.enqueueNDRangeKernel(
-        kernel,
-        null,
-        &.{1},
-        &.{1},
-        &.{write_complete},
-    );
-    defer kernel_complete.release();
-
-    var result: u16 = undefined;
-    const read_complete = try queue.enqueueReadBuffer(
-        u16,
-        err_buf,
-        false,
-        0,
-        (&result)[0..1],
-        &.{kernel_complete},
-    );
-
-    try cl.waitForEvents(&.{read_complete});
-
-    const start = try kernel_complete.commandStartTime();
-    const stop = try kernel_complete.commandEndTime();
-    const runtime = (stop - start) / std.time.ns_per_us;
-
-    return .{ result, runtime };
 }
 
 const InstructionIterator = struct {
@@ -650,6 +498,231 @@ const Module = struct {
     }
 };
 
+pub const OpenCL = struct {
+    const KnownPlatform = enum {
+        intel,
+        pocl,
+        rusticl,
+        unknown,
+    };
+
+    platform: cl.Platform,
+    device: cl.Device,
+    context: cl.Context,
+    queue: cl.CommandQueue,
+    program: cl.Program,
+    err_buf: cl.Buffer,
+    known_platform: KnownPlatform,
+
+    fn init(a: Allocator, module: Module, options: Options) !OpenCL {
+        std.log.debug("initializing opencl", .{});
+        const platform, const device = try pickPlatformAndDevice(a, options);
+        const platform_name = try platform.getName(a);
+        std.log.debug("using platform '{s}'", .{platform_name});
+        std.log.debug("using device '{s}'", .{try device.getName(a)});
+
+        const known_platform: KnownPlatform = if (std.mem.eql(u8, "Intel(R) OpenCL", platform_name))
+            .intel
+        else if (std.mem.eql(u8, "Portable Computing Language", platform_name))
+            .pocl
+        else if (std.mem.eql(u8, "rusticl", platform_name))
+            .rusticl
+        else
+            .unknown;
+
+        if (known_platform != .unknown) {
+            std.log.debug("detected known platform: {s}", .{@tagName(known_platform)});
+        }
+
+        if (!options.disable_workarounds and known_platform == .pocl) {
+            module.fixupKernelNamesForPOCL();
+        }
+
+        const context = try cl.Context.create(&.{device}, .{ .platform = platform });
+        errdefer context.release();
+
+        const queue = try cl.CommandQueue.create(context, device, .{ .profiling = true });
+        errdefer queue.release();
+
+        // All spir-v kernels can be launched from the same program.
+        // TODO: Check that this function is actually available, and error out otherwise.
+        const program = try cl.Program.createWithIL(context, std.mem.sliceAsBytes(module.words));
+        errdefer program.release();
+
+        std.log.debug("compiling spir-v kernels", .{});
+        program.build(&.{device}, "") catch |err| switch (err) {
+            error.BuildProgramFailure => {
+                const build_log = try program.getBuildLog(a, device);
+                std.log.err("Failed to build program. Error log: \n{s}\n", .{build_log});
+                std.process.exit(1);
+            },
+            else => return err,
+        };
+        std.log.debug("program built successfully", .{});
+
+        const err_buf = try cl.Buffer(u16).create(opencl.context, .{ .read_write = true }, 1);
+        defer err_buf.release();
+
+        return .{
+            .platform = platform,
+            .device = device,
+            .context = context,
+            .queue = queue,
+            .program = program,
+            .err_buf = err_buf,
+            .known_platform = known_platform,
+        };
+    }
+
+    fn deinit(self: *OpenCL) void {
+        self.err_buf.release();
+        self.program.release();
+        self.queue.release();
+        self.context.release();
+        self.* = undefined;
+    }
+
+    fn runTest(self: *OpenCL, name: [:0]const u8) !struct{u16, u64} {
+        const kernel = try cl.Kernel.create(self.program, name);
+        defer kernel.release();
+
+        // Poison the error code buffer with known garbage so
+        // that we know if the kernel didn't write
+
+        const write_complete = try self.queue.enqueueWriteBuffer(
+            u16,
+            self.err_buf,
+            false,
+            0,
+            &.{poison_error_code},
+            &.{},
+        );
+
+        try kernel.setArg(cl.Buffer(u16), 0, self.err_buf);
+        const kernel_complete = try self.queue.enqueueNDRangeKernel(
+            kernel,
+            null,
+            &.{1},
+            &.{1},
+            &.{write_complete},
+        );
+        defer kernel_complete.release();
+
+        var result: u16 = undefined;
+        const read_complete = try self.queue.enqueueReadBuffer(
+            u16,
+            self.err_buf,
+            false,
+            0,
+            (&result)[0..1],
+            &.{kernel_complete},
+        );
+
+        try cl.waitForEvents(&.{read_complete});
+
+        const start = try kernel_complete.commandStartTime();
+        const stop = try kernel_complete.commandEndTime();
+        const runtime = (stop - start) / std.time.ns_per_us;
+
+        return .{ result, runtime };
+    }
+
+        fn pickDevice(a: Allocator, platform: cl.Platform, query: ?[]const u8) !cl.Device {
+        const available_devices = try platform.getDevices(a, cl.DeviceType.all);
+        if (available_devices.len == 0) {
+            return error.NoDevices;
+        }
+
+        if (query) |device_query| {
+            for (available_devices) |device| {
+                const name = try device.getName(a);
+                if (std.mem.indexOf(u8, name, device_query) != null) {
+                    if (!try deviceSupportsSpirv(a, device)) {
+                        fail("device '{s}' does not support spir-v ingestion", .{name});
+                    }
+                    return device;
+                }
+            }
+
+            return error.NoSuchDevice;
+        } else {
+            for (available_devices) |device| {
+                if (try deviceSupportsSpirv(a, device)) {
+                    return device;
+                }
+            }
+
+            return error.NoSpirvSupport;
+        }
+    }
+
+    fn pickPlatformAndDevice(
+        a: Allocator,
+        options: Options,
+    ) !struct { cl.Platform, cl.Device } {
+        const available_platforms = try cl.getPlatforms(a);
+        std.log.debug("{} platform(s) available", .{available_platforms.len});
+
+        if (available_platforms.len == 0) {
+            fail("no opencl platform available", .{});
+        }
+
+        if (options.platform) |platform_query| {
+            const platform, const name = for (available_platforms) |platform| {
+                const name = try platform.getName(a);
+                if (std.mem.indexOf(u8, name, platform_query) != null) {
+                    break .{ platform, name };
+                }
+            } else {
+                fail("no such opencl platform '{s}'", .{platform_query});
+            };
+
+            const device = pickDevice(a, platform, options.device) catch |err| switch (err) {
+                error.NoDevices => fail("no opencl devices available for platform '{s}'", .{name}),
+                error.NoSuchDevice => fail("platform '{s}' has no devices that match '{s}'", .{ name, options.device.? }),
+                error.NoSpirvSupport => fail("platform '{s}' has no devices that support SPIR-V ingestion", .{name}),
+                else => return err,
+            };
+            return .{ platform, device };
+        } else if (options.device) |device_query| {
+            // Loop through all platforms to find one which matches the device
+            var device_found_but_doesnt_have_spirv: ?cl.Platform = null;
+            for (available_platforms) |platform| {
+                const device = pickDevice(a, platform, device_query) catch |err| switch (err) {
+                    error.NoDevices, error.NoSuchDevice => continue,
+                    error.NoSpirvSupport => {
+                        // There could be other platforms that have this device, so continue,
+                        // but record that we found at least one that matched this name.
+                        device_found_but_doesnt_have_spirv = platform;
+                        continue;
+                    },
+                    else => return err,
+                };
+
+                return .{ platform, device };
+            }
+
+            if (device_found_but_doesnt_have_spirv) |platform| {
+                const name = try platform.getName(a);
+                fail("platform '{s}' has a device that matches '{s}', but it doesn't support SPIR-V ingestion", .{ name, device_query });
+            } else {
+                fail("no platform has opencl device '{s}'", .{device_query});
+            }
+        } else {
+            for (available_platforms) |platform| {
+                const device = pickDevice(a, platform, null) catch |err| switch (err) {
+                    error.NoDevices, error.NoSpirvSupport => continue,
+                    error.NoSuchDevice => unreachable,
+                    else => return err,
+                };
+                return .{ platform, device };
+            } else {
+                fail("no opencl platform that has any devices which support SPIR-V ingestion", .{});
+            }
+        }
+    }
+};
+
 pub fn main() !u8 {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -660,85 +733,28 @@ pub fn main() !u8 {
         log_verbose = true;
     }
 
-    const root_node = std.Progress.start(.{
-        .estimated_total_items = 3,
-    });
-    const have_tty = std.io.getStdErr().isTty();
-
-    const init_opencl_node = root_node.start("Initializing OpenCL", 0);
-    std.log.debug("initializing OpenCL", .{});
-
-    const platform, const device = try pickPlatformAndDevice(a, options);
-    const platform_name = try platform.getName(a);
-    std.log.debug("using platform '{s}'", .{platform_name});
-    std.log.debug("using device '{s}'", .{try device.getName(a)});
-
-    const known_platform: KnownPlatform = if (std.mem.eql(u8, "Intel(R) OpenCL", platform_name))
-        .intel
-    else if (std.mem.eql(u8, "Portable Computing Language", platform_name))
-        .pocl
-    else if (std.mem.eql(u8, "rusticl", platform_name))
-        .rusticl
-    else
-        .unknown;
-
-    if (known_platform != .unknown) {
-        std.log.debug("detected known platform: {s}", .{@tagName(known_platform)});
-    }
-    init_opencl_node.end();
-
-    const load_node = root_node.start("Loading SPIR-V module", 0);
-    std.log.debug("loading spir-v module '{s}'", .{options.module});
-
     const module = try Module.load(a, options.module);
     std.log.debug("module type {}", .{module.module_type});
     std.log.debug("module has {} entry point(s)", .{module.entry_points.len});
     std.log.debug("module has {} error code(s)", .{module.error_names.len});
-
-    if (!options.disable_workarounds and known_platform == .pocl) {
-        module.fixupKernelNamesForPOCL();
-    }
 
     if (module.entry_points.len == 0) {
         // Nothing to test.
         return 0;
     }
 
-    const context = try cl.Context.create(&.{device}, .{ .platform = platform });
-    defer context.release();
+    var opencl = try OpenCL.init(a, module, options);
+    defer opencl.deinit();
 
-    const queue = try cl.CommandQueue.create(context, device, .{ .profiling = true });
-    defer queue.release();
-
-    // All spir-v kernels can be launched from the same program.
-    // TODO: Check that this function is actually available, and error out otherwise.
-    const program = try cl.Program.createWithIL(context, std.mem.sliceAsBytes(module.words));
-    defer program.release();
-
-    load_node.end();
-
-    const compile_node = root_node.start("Compiling SPIR-V kernels", 0);
-    std.log.debug("compiling spir-v kernels", .{});
-    program.build(&.{device}, "") catch |err| switch (err) {
-        error.BuildProgramFailure => {
-            const build_log = try program.getBuildLog(a, device);
-            std.log.err("Failed to build program. Error log: \n{s}\n", .{build_log});
-            std.process.exit(1);
-        },
-        else => return err,
-    };
-    compile_node.end();
-
-    std.log.debug("program built successfully", .{});
-
-    const buf = try cl.Buffer(u16).create(context, .{ .read_write = true }, 1);
-    defer buf.release();
+    const root_node = std.Progress.start(.{
+        .estimated_total_items = 1,
+    });
+    const test_root_node = root_node.start("Test", module.entry_points.len);
+    const have_tty = std.io.getStdErr().isTty();
 
     var ok_count: usize = 0;
     var fail_count: usize = 0;
     var skip_count: usize = 0;
-
-    const test_root_node = root_node.start("Test", module.entry_points.len);
 
     for (module.entry_points, 0..) |entry_point, i| {
         const test_node = test_root_node.start(entry_point.name, 0);
@@ -751,10 +767,8 @@ pub fn main() !u8 {
             std.log.info(log_prefix, log_prefix_args);
         }
 
-        const error_code, const runtime = launchTestKernel(queue, program, buf, entry_point.name) catch |err| {
-            if (have_tty) {
-                std.log.info(log_prefix ++ "FAIL (OpenCL: {s})", log_prefix_args ++ .{ @errorName(err) });
-            }
+        const error_code, const runtime = opencl.runTest(entry_point.name) catch |err| {
+            std.log.info(log_prefix ++ "FAIL (API error: {s})", log_prefix_args ++ .{ @errorName(err) });
             fail_count += 1;
             continue;
         };
