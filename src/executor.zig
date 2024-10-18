@@ -169,25 +169,6 @@ fn parseArgs(a: Allocator) !Options {
     };
 }
 
-fn deviceSupportsSpirv(a: Allocator, device: cl.Device) !bool {
-    // TODO: Check for OpenCL 3.0 before accessing this function?
-    const ils = try device.getILsWithVersion(a);
-
-    for (ils) |il| {
-        // TODO: Minimum version?
-        if (std.mem.eql(u8, il.getName(), "SPIR-V")) {
-            std.log.debug("Support for SPIR-V version {}.{}.{} detected", .{
-                il.version.major,
-                il.version.minor,
-                il.version.patch,
-            });
-            return true;
-        }
-    }
-
-    return false;
-}
-
 const InstructionIterator = struct {
     module: []spirv.Word,
     index: usize = 0,
@@ -511,7 +492,7 @@ pub const OpenCL = struct {
     context: cl.Context,
     queue: cl.CommandQueue,
     program: cl.Program,
-    err_buf: cl.Buffer,
+    err_buf: cl.Buffer(u16),
     known_platform: KnownPlatform,
 
     fn init(a: Allocator, module: Module, options: Options) !OpenCL {
@@ -560,8 +541,8 @@ pub const OpenCL = struct {
         };
         std.log.debug("program built successfully", .{});
 
-        const err_buf = try cl.Buffer(u16).create(opencl.context, .{ .read_write = true }, 1);
-        defer err_buf.release();
+        const err_buf = try cl.Buffer(u16).create(context, .{ .read_write = true }, 1);
+        errdefer err_buf.release();
 
         return .{
             .platform = platform,
@@ -627,7 +608,7 @@ pub const OpenCL = struct {
         return .{ result, runtime };
     }
 
-        fn pickDevice(a: Allocator, platform: cl.Platform, query: ?[]const u8) !cl.Device {
+    fn pickDevice(a: Allocator, platform: cl.Platform, query: ?[]const u8) !cl.Device {
         const available_devices = try platform.getDevices(a, cl.DeviceType.all);
         if (available_devices.len == 0) {
             return error.NoDevices;
@@ -721,6 +702,144 @@ pub const OpenCL = struct {
             }
         }
     }
+
+    fn deviceSupportsSpirv(a: Allocator, device: cl.Device) !bool {
+        // TODO: Check for OpenCL 3.0 before accessing this function?
+        const ils = try device.getILsWithVersion(a);
+
+        for (ils) |il| {
+            // TODO: Minimum version?
+            if (std.mem.eql(u8, il.getName(), "SPIR-V")) {
+                std.log.debug("Support for SPIR-V version {}.{}.{} detected", .{
+                    il.version.major,
+                    il.version.minor,
+                    il.version.patch,
+                });
+                return true;
+            }
+        }
+
+        return false;
+    }
+};
+
+const Vulkan = struct {
+    const apis: []const vk.ApiInfo = &.{
+        vk.features.version_1_0,
+    };
+
+    const BaseDispatch = vk.BaseWrapper(apis);
+    const Instance = vk.InstanceProxy(apis);
+    const Device = vk.DeviceProxy(apis);
+
+    lib: std.DynLib,
+    vkb: BaseDispatch,
+    instance: Instance,
+
+    pdev: vk.PhysicalDevice,
+    props: vk.PhysicalDeviceProperties,
+    mem_props: vk.PhysicalDeviceMemoryProperties,
+
+    dev: Device,
+    compute_queue_family: u32,
+    compute_queue: vk.Queue,
+
+    fn init(a: Allocator, module: Module, options: Options) !Vulkan {
+        _ = module;
+
+        std.log.debug("initializing vulkan", .{});
+
+        var self: Vulkan = undefined;
+
+        self.lib = try std.DynLib.open("libvulkan.so.1");
+        errdefer self.lib.close();
+
+        const vk_get_instance_proc_addr = self.lib.lookup(vk.PfnGetInstanceProcAddr, "vkGetInstanceProcAddr") orelse {
+            fail("libvulkan.so.1 doesn't provide vkGetInstanceProcAddr", .{});
+        };
+        self.vkb = try BaseDispatch.load(vk_get_instance_proc_addr);
+
+        const instance = try self.vkb.createInstance(&.{
+            .p_application_info = &.{
+                .p_application_name = "zig spir-v test executor",
+                .application_version = vk.makeApiVersion(0, 0, 0, 0),
+                .p_engine_name = "super cool engine",
+                .engine_version = vk.makeApiVersion(0, 0, 0, 0),
+                .api_version = vk.API_VERSION_1_3,
+            },
+        }, null);
+
+        const vki = try a.create(Instance.Wrapper);
+        vki.* = try Instance.Wrapper.load(instance, self.vkb.dispatch.vkGetInstanceProcAddr);
+        self.instance = Instance.init(instance, vki);
+        errdefer self.instance.destroyInstance(null);
+
+        const pdevs = try self.instance.enumeratePhysicalDevicesAlloc(a);
+        std.log.debug("{} device(s) are available", .{pdevs.len});
+        if (pdevs.len == 0) {
+            fail("no vulkan devices available", .{});
+        }
+
+        if (options.device) |device_query| {
+            for (pdevs) |pdev| {
+                const props = self.instance.getPhysicalDeviceProperties(pdev);
+                const name = std.mem.sliceTo(&props.device_name, 0);
+                if (std.mem.indexOf(u8, name, device_query) != null) {
+                    self.pdev = pdev;
+                    self.props = props;
+                    break;
+                }
+            } else {
+                fail("no such vulkan device: '{s}'", .{device_query});
+            }
+        } else {
+            self.pdev = pdevs[0];
+            self.props = self.instance.getPhysicalDeviceProperties(self.pdev);
+        }
+
+        self.mem_props = self.instance.getPhysicalDeviceMemoryProperties(self.pdev);
+
+        std.log.debug("using vulkan device: '{s}'", .{std.mem.sliceTo(&self.props.device_name, 0)});
+        std.log.debug("initializing device", .{});
+
+        const families = try self.instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pdev, a);
+        self.compute_queue_family = for (families, 0..) |props, i| {
+            const fam: u32 = @intCast(i);
+            if (props.queue_flags.compute_bit) {
+                break fam;
+            }
+        } else {
+            std.log.err("every vulkan device should have at least one compute queue", .{});
+            std.log.err("please get yourself a better gpu driver", .{});
+            fail("no compute queue", .{});
+        };
+
+        const dev = try self.instance.createDevice(self.pdev, &.{
+            .queue_create_info_count = 1,
+            .p_queue_create_infos = &.{
+                .{
+                    .queue_family_index = self.compute_queue_family,
+                    .queue_count = 1,
+                    .p_queue_priorities = &.{1},
+                },
+            },
+        }, null);
+
+        const vkd = try a.create(Device.Wrapper);
+        vkd.* = try Device.Wrapper.load(dev, self.instance.wrapper.dispatch.vkGetDeviceProcAddr);
+        self.dev = Device.init(dev, vkd);
+        errdefer self.dev.destroyDevice(null);
+
+        self.compute_queue = self.dev.getDeviceQueue(self.compute_queue_family, 0);
+
+        return self;
+    }
+
+    fn deinit(self: *Vulkan) void {
+        self.instance.destroyInstance(null);
+        self.lib.close();
+        self.* = undefined;
+    }
 };
 
 pub fn main() !u8 {
@@ -745,6 +864,9 @@ pub fn main() !u8 {
 
     var opencl = try OpenCL.init(a, module, options);
     defer opencl.deinit();
+
+    var vulkan = try Vulkan.init(a, module, options);
+    defer vulkan.deinit();
 
     const root_node = std.Progress.start(.{
         .estimated_total_items = 1,
