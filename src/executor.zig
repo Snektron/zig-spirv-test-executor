@@ -291,8 +291,6 @@ const Module = struct {
                         // n: interface (variable)
                         const name_ptr = std.mem.sliceAsBytes(inst.operands[2..]);
                         const name = std.mem.sliceTo(name_ptr, 0);
-                        if (std.mem.eql(u8, name, "main")) continue;
-
                         try entry_points.append(.{
                             .id = inst.operands[1],
                             .name = name_ptr[0..name.len :0],
@@ -563,7 +561,7 @@ pub const OpenCL = struct {
         self.* = undefined;
     }
 
-    fn runTest(self: *OpenCL, name: [:0]const u8) !struct{u16, u64} {
+    fn runTest(self: *OpenCL, name: [:0]const u8) !struct { u16, u64 } {
         const kernel = try cl.Kernel.create(self.program, name);
         defer kernel.release();
 
@@ -603,9 +601,8 @@ pub const OpenCL = struct {
 
         const start = try kernel_complete.commandStartTime();
         const stop = try kernel_complete.commandEndTime();
-        const runtime = (stop - start) / std.time.ns_per_us;
 
-        return .{ result, runtime };
+        return .{ result, stop - start };
     }
 
     fn pickDevice(a: Allocator, platform: cl.Platform, query: ?[]const u8) !cl.Device {
@@ -726,11 +723,27 @@ pub const OpenCL = struct {
 const Vulkan = struct {
     const apis: []const vk.ApiInfo = &.{
         vk.features.version_1_0,
+        vk.features.version_1_1,
+        vk.features.version_1_2,
+    };
+
+    const required_layers = [_][*:0]const u8{
+        "VK_LAYER_KHRONOS_validation",
     };
 
     const BaseDispatch = vk.BaseWrapper(apis);
     const Instance = vk.InstanceProxy(apis);
     const Device = vk.DeviceProxy(apis);
+
+    const PushConstantBuffer = extern struct {
+        err_buf: vk.DeviceAddress,
+    };
+
+    const Kernel = struct {
+        name: []const u8,
+        pipeline_layout: vk.PipelineLayout,
+        pipeline: vk.Pipeline,
+    };
 
     lib: std.DynLib,
     vkb: BaseDispatch,
@@ -743,10 +756,21 @@ const Vulkan = struct {
     dev: Device,
     compute_queue_family: u32,
     compute_queue: vk.Queue,
+    compute_queue_props: vk.QueueFamilyProperties,
+
+    cmd_pool: vk.CommandPool,
+    cmd_buf: vk.CommandBuffer,
+
+    kernels: []Kernel,
+
+    err_buf: vk.Buffer,
+    err_buf_mem: vk.DeviceMemory,
+    err_buf_addr: vk.DeviceAddress,
+    err_ptr: *u16,
+
+    query_pool: vk.QueryPool,
 
     fn init(a: Allocator, module: Module, options: Options) !Vulkan {
-        _ = module;
-
         std.log.debug("initializing vulkan", .{});
 
         var self: Vulkan = undefined;
@@ -767,6 +791,8 @@ const Vulkan = struct {
                 .engine_version = vk.makeApiVersion(0, 0, 0, 0),
                 .api_version = vk.API_VERSION_1_3,
             },
+            .enabled_layer_count = required_layers.len,
+            .pp_enabled_layer_names = &required_layers,
         }, null);
 
         const vki = try a.create(Instance.Wrapper);
@@ -780,21 +806,40 @@ const Vulkan = struct {
             fail("no vulkan devices available", .{});
         }
 
+        if (options.platform) |platform_query| {
+            std.log.warn("platform query '{s}' does not apply to vulkan!", .{platform_query});
+        }
+
         if (options.device) |device_query| {
             for (pdevs) |pdev| {
                 const props = self.instance.getPhysicalDeviceProperties(pdev);
                 const name = std.mem.sliceTo(&props.device_name, 0);
-                if (std.mem.indexOf(u8, name, device_query) != null) {
-                    self.pdev = pdev;
-                    self.props = props;
-                    break;
+                if (std.mem.indexOf(u8, name, device_query) == null) {
+                    continue;
                 }
+
+                if (!pdevHasBDASupport(self.instance, pdev)) {
+                    fail("device '{s}' does not support buffer device address", .{name});
+                }
+
+                self.pdev = pdev;
+                self.props = props;
+                break;
             } else {
                 fail("no such vulkan device: '{s}'", .{device_query});
             }
         } else {
-            self.pdev = pdevs[0];
-            self.props = self.instance.getPhysicalDeviceProperties(self.pdev);
+            for (pdevs) |pdev| {
+                if (!pdevHasBDASupport(self.instance, pdev)) {
+                    continue;
+                }
+
+                self.pdev = pdev;
+                self.props = self.instance.getPhysicalDeviceProperties(self.pdev);
+                break;
+            } else {
+                fail("there are no devices that support buffer device address", .{});
+            }
         }
 
         self.mem_props = self.instance.getPhysicalDeviceMemoryProperties(self.pdev);
@@ -803,18 +848,23 @@ const Vulkan = struct {
         std.log.debug("initializing device", .{});
 
         const families = try self.instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pdev, a);
-        self.compute_queue_family = for (families, 0..) |props, i| {
-            const fam: u32 = @intCast(i);
+        for (families, 0..) |props, i| {
             if (props.queue_flags.compute_bit) {
-                break fam;
+                self.compute_queue_family = @intCast(i);
+                self.compute_queue_props = props;
+                break;
             }
         } else {
             std.log.err("every vulkan device should have at least one compute queue", .{});
             std.log.err("please get yourself a better gpu driver", .{});
             fail("no compute queue", .{});
-        };
+        }
 
+        const features12: vk.PhysicalDeviceVulkan12Features = .{
+            .buffer_device_address = vk.TRUE,
+        };
         const dev = try self.instance.createDevice(self.pdev, &.{
+            .p_next = @ptrCast(&features12),
             .queue_create_info_count = 1,
             .p_queue_create_infos = &.{
                 .{
@@ -832,42 +882,238 @@ const Vulkan = struct {
 
         self.compute_queue = self.dev.getDeviceQueue(self.compute_queue_family, 0);
 
+        self.cmd_pool = try self.dev.createCommandPool(&.{
+            .flags = .{},
+            .queue_family_index = self.compute_queue_family,
+        }, null);
+        errdefer self.dev.destroyCommandPool(self.cmd_pool, null);
+
+        var cmd_bufs: [1]vk.CommandBuffer = undefined;
+        try self.dev.allocateCommandBuffers(&.{
+            .command_pool = self.cmd_pool,
+            .level = .primary,
+            .command_buffer_count = 1,
+        }, &cmd_bufs);
+        self.cmd_buf = cmd_bufs[0];
+
+        const shader = try self.dev.createShaderModule(&.{
+            .code_size = module.words.len * @sizeOf(spirv.Word),
+            .p_code = module.words.ptr,
+        }, null);
+        defer self.dev.destroyShaderModule(shader, null);
+
+        self.kernels = try a.alloc(Kernel, module.entry_points.len);
+        for (self.kernels) |*k| k.* = .{
+            .name = undefined,
+            .pipeline_layout = .null_handle,
+            .pipeline = .null_handle,
+        };
+        errdefer self.deinitKernels();
+
+        for (module.entry_points, 0..) |entry_point, i| {
+            self.kernels[i] = try self.initKernel(entry_point.name, shader);
+        }
+
+        self.err_buf = try self.dev.createBuffer(&.{
+            .size = @sizeOf(u16),
+            .usage = .{
+                .transfer_dst_bit = true,
+                .storage_buffer_bit = true,
+                .shader_device_address_bit = true,
+            },
+            .sharing_mode = .exclusive,
+        }, null);
+        errdefer self.dev.destroyBuffer(self.err_buf, null);
+
+        const mem_reqs = self.dev.getBufferMemoryRequirements(self.err_buf);
+        self.err_buf_mem = try self.allocate(mem_reqs, .{
+            .host_visible_bit = true,
+            .host_coherent_bit = true,
+            .device_local_bit = true,
+        }, true);
+        errdefer self.dev.freeMemory(self.err_buf_mem, null);
+        try self.dev.bindBufferMemory(self.err_buf, self.err_buf_mem, 0);
+
+        self.err_buf_addr = self.dev.getBufferDeviceAddress(&.{
+            .buffer = self.err_buf,
+        });
+
+        std.log.debug("error buffer device address: 0x{x:0>16}", .{self.err_buf_addr});
+
+        self.err_ptr = @ptrCast(@alignCast(try self.dev.mapMemory(self.err_buf_mem, 0, @sizeOf(u16), .{})));
+
+        self.query_pool = try self.dev.createQueryPool(&.{
+            .query_type = .timestamp,
+            .query_count = 2, // start and end
+        }, null);
+
         return self;
     }
 
     fn deinit(self: *Vulkan) void {
+        self.dev.destroyQueryPool(self.query_pool, null);
+        self.dev.unmapMemory(self.err_buf_mem);
+        self.dev.freeMemory(self.err_buf_mem, null);
+        self.dev.destroyBuffer(self.err_buf, null);
+        self.deinitKernels();
+        self.dev.destroyCommandPool(self.cmd_pool, null);
+        self.dev.destroyDevice(null);
         self.instance.destroyInstance(null);
         self.lib.close();
         self.* = undefined;
     }
+
+    fn deinitKernels(self: *Vulkan) void {
+        for (self.kernels) |k| {
+            self.dev.destroyPipelineLayout(k.pipeline_layout, null);
+            self.dev.destroyPipeline(k.pipeline, null);
+        }
+    }
+
+    fn pdevHasBDASupport(instance: Instance, pdev: vk.PhysicalDevice) bool {
+        var features12: vk.PhysicalDeviceVulkan12Features = .{};
+        var features: vk.PhysicalDeviceFeatures2 = .{
+            .p_next = @ptrCast(&features12),
+            .features = .{},
+        };
+        features.p_next = &features12;
+        instance.getPhysicalDeviceFeatures2(pdev, &features);
+        return features12.buffer_device_address == vk.TRUE;
+    }
+
+    fn initKernel(self: *Vulkan, name: [:0]const u8, shader: vk.ShaderModule) !Kernel {
+        // TODO: Push constant range and stuff
+        const pipeline_layout = try self.dev.createPipelineLayout(&.{
+            .push_constant_range_count = 1,
+            .p_push_constant_ranges = &.{
+                .{
+                    .stage_flags = .{ .compute_bit = true },
+                    .offset = 0,
+                    .size = @sizeOf(PushConstantBuffer),
+                },
+            },
+        }, null);
+
+        var pipelines: [1]vk.Pipeline = undefined;
+        _ = try self.dev.createComputePipelines(
+            .null_handle,
+            1,
+            &.{
+                .{
+                    .stage = .{
+                        .stage = .{ .compute_bit = true },
+                        .module = shader,
+                        .p_name = name,
+                    },
+                    .layout = pipeline_layout,
+                    .base_pipeline_handle = .null_handle,
+                    .base_pipeline_index = 0,
+                },
+            },
+            null,
+            &pipelines,
+        );
+
+        return .{
+            .name = name,
+            .pipeline_layout = pipeline_layout,
+            .pipeline = pipelines[0],
+        };
+    }
+
+    pub fn findMemoryTypeIndex(self: *Vulkan, memory_type_bits: u32, flags: vk.MemoryPropertyFlags) !u32 {
+        for (self.mem_props.memory_types[0..self.mem_props.memory_type_count], 0..) |mem_type, i| {
+            if (memory_type_bits & (@as(u32, 1) << @truncate(i)) != 0 and mem_type.property_flags.contains(flags)) {
+                return @truncate(i);
+            }
+        }
+
+        return error.NoSuitableMemoryType;
+    }
+
+    pub fn allocate(self: *Vulkan, requirements: vk.MemoryRequirements, flags: vk.MemoryPropertyFlags, allocate_device_address: bool) !vk.DeviceMemory {
+        const allocate_flags_info: vk.MemoryAllocateFlagsInfo = .{
+            .flags = .{
+                .device_address_bit = true,
+            },
+            .device_mask = 0x0,
+        };
+
+        return try self.dev.allocateMemory(&.{
+            .p_next = if (allocate_device_address) &allocate_flags_info else null,
+            .allocation_size = requirements.size,
+            .memory_type_index = try self.findMemoryTypeIndex(requirements.memory_type_bits, flags),
+        }, null);
+    }
+
+    fn runTest(self: *Vulkan, name: [:0]const u8) !struct { u16, u64 } {
+        self.err_ptr.* = poison_error_code;
+
+        // TODO: Improve this
+        const kernel = for (self.kernels) |k| {
+            if (std.mem.eql(u8, k.name, name)) {
+                break k;
+            }
+        } else unreachable;
+
+        try self.dev.resetCommandPool(self.cmd_pool, .{});
+        try self.dev.beginCommandBuffer(self.cmd_buf, &.{
+            .flags = .{ .one_time_submit_bit = true },
+        });
+
+        self.dev.cmdResetQueryPool(self.cmd_buf, self.query_pool, 0, 2);
+
+        self.dev.cmdWriteTimestamp(self.cmd_buf, .{ .compute_shader_bit = true }, self.query_pool, 0);
+        self.dev.cmdBindPipeline(self.cmd_buf, .compute, kernel.pipeline);
+        const push_constants: PushConstantBuffer = .{
+            .err_buf = self.err_buf_addr,
+        };
+        self.dev.cmdPushConstants(
+            self.cmd_buf,
+            kernel.pipeline_layout,
+            .{ .compute_bit = true },
+            0,
+            @sizeOf(PushConstantBuffer),
+            @ptrCast(&push_constants),
+        );
+        self.dev.cmdDispatch(self.cmd_buf, 1, 1, 1);
+        self.dev.cmdWriteTimestamp(self.cmd_buf, .{ .compute_shader_bit = true }, self.query_pool, 1);
+
+        try self.dev.endCommandBuffer(self.cmd_buf);
+        try self.dev.queueSubmit(self.compute_queue, 1, &.{
+            .{
+                .command_buffer_count = 1,
+                .p_command_buffers = &.{self.cmd_buf},
+            },
+        }, .null_handle);
+
+        try self.dev.queueWaitIdle(self.compute_queue);
+
+        var query_results: [2]u64 = undefined;
+        _ = try self.dev.getQueryPoolResults(
+            self.query_pool,
+            0,
+            2,
+            @sizeOf([2]u64),
+            &query_results,
+            @sizeOf(u64),
+            .{ .@"64_bit" = true },
+        );
+
+        if (self.compute_queue_props.timestamp_valid_bits != 64) {
+            query_results[0] &= (@as(u64, 1) << @intCast(self.compute_queue_props.timestamp_valid_bits)) - 1;
+            query_results[1] &= (@as(u64, 1) << @intCast(self.compute_queue_props.timestamp_valid_bits)) - 1;
+        }
+
+        const runtime = @as(f32, @floatFromInt((query_results[1] - query_results[0]))) * self.props.limits.timestamp_period;
+
+        const error_code = self.err_ptr.*;
+
+        return .{ error_code, @intFromFloat(runtime) };
+    }
 };
 
-pub fn main() !u8 {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const options = try parseArgs(a);
-    if (options.verbose) {
-        log_verbose = true;
-    }
-
-    const module = try Module.load(a, options.module);
-    std.log.debug("module type {}", .{module.module_type});
-    std.log.debug("module has {} entry point(s)", .{module.entry_points.len});
-    std.log.debug("module has {} error code(s)", .{module.error_names.len});
-
-    if (module.entry_points.len == 0) {
-        // Nothing to test.
-        return 0;
-    }
-
-    var opencl = try OpenCL.init(a, module, options);
-    defer opencl.deinit();
-
-    var vulkan = try Vulkan.init(a, module, options);
-    defer vulkan.deinit();
-
+fn runTests(api: anytype, module: Module) !bool {
     const root_node = std.Progress.start(.{
         .estimated_total_items = 1,
     });
@@ -889,8 +1135,8 @@ pub fn main() !u8 {
             std.log.info(log_prefix, log_prefix_args);
         }
 
-        const error_code, const runtime = opencl.runTest(entry_point.name) catch |err| {
-            std.log.info(log_prefix ++ "FAIL (API error: {s})", log_prefix_args ++ .{ @errorName(err) });
+        const error_code, const runtime = api.runTest(entry_point.name) catch |err| {
+            std.log.info(log_prefix ++ "FAIL (API error: {s})", log_prefix_args ++ .{@errorName(err)});
             fail_count += 1;
             continue;
         };
@@ -911,7 +1157,7 @@ pub fn main() !u8 {
         }
 
         if (log_verbose) {
-            std.log.info(log_prefix ++ "runtime: {}us", log_prefix_args ++ .{ runtime });
+            std.log.info(log_prefix ++ "runtime: {} ns", log_prefix_args ++ .{runtime});
         }
     }
 
@@ -923,5 +1169,43 @@ pub fn main() !u8 {
         std.log.info("{} passed; {} skipped; {} failed.", .{ ok_count, skip_count, fail_count });
     }
 
-    return @intFromBool(!options.reducing and fail_count != 0);
+    return fail_count != 0;
+}
+
+pub fn main() !u8 {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const options = try parseArgs(a);
+    if (options.verbose) {
+        log_verbose = true;
+    }
+
+    const module = try Module.load(a, options.module);
+    std.log.debug("module type {s}", .{@tagName(module.module_type)});
+    std.log.debug("module has {} entry point(s)", .{module.entry_points.len});
+    std.log.debug("module has {} error code(s)", .{module.error_names.len});
+
+    if (module.entry_points.len == 0) {
+        // Nothing to test.
+        return 0;
+    }
+
+    const has_fails = switch (module.module_type) {
+        .kernel => blk: {
+            std.log.debug("running module under opencl", .{});
+            var opencl = try OpenCL.init(a, module, options);
+            defer opencl.deinit();
+            break :blk try runTests(&opencl, module);
+        },
+        .shader => blk: {
+            std.log.debug("running module under vulkan", .{});
+            var vulkan = try Vulkan.init(a, module, options);
+            defer vulkan.deinit();
+            break :blk try runTests(&vulkan, module);
+        },
+    };
+
+    return @intFromBool(!options.reducing and has_fails);
 }
