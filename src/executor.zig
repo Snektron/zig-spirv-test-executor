@@ -251,13 +251,11 @@ const Module = struct {
             fail("invalid SPIR-V magic", .{});
         }
 
-        try validate(a, module);
-
         std.log.debug("scanning module for entry points", .{});
 
         var entry_points = std.ArrayList(EntryPoint).init(a);
         var maybe_error_names: ?[]const u8 = null;
-        var module_type: ?ModuleType = null;
+        var maybe_module_type: ?ModuleType = null;
 
         {
             var it = InstructionIterator.init(module);
@@ -268,8 +266,8 @@ const Module = struct {
                         // 0: capability
                         const capability: spirv.Capability = @enumFromInt(inst.operands[0]);
                         switch (capability) {
-                            .Shader => module_type = .shader,
-                            .Kernel => module_type = .kernel,
+                            .Shader => maybe_module_type = .shader,
+                            .Kernel => maybe_module_type = .kernel,
                             _ => {},
                         }
                     },
@@ -319,9 +317,12 @@ const Module = struct {
             break :blk names.items;
         };
 
+        const module_type = maybe_module_type orelse fail("kernel has no OpCapability Kernel and no OpCapability Shader", .{});
+        try validate(a, module, module_type);
+
         return .{
             .words = module,
-            .module_type = module_type orelse fail("kernel has no OpCapability Kernel and no OpCapability Shader", .{}),
+            .module_type = module_type,
             .entry_points = entry_points.items,
             .error_names = error_names,
         };
@@ -334,8 +335,12 @@ const Module = struct {
             null;
     }
 
-    fn validate(a: Allocator, module: []u32) !void {
-        const context = c.spvContextCreate(c.SPV_ENV_UNIVERSAL_1_5); // TODO: Use OpenCL environments?
+    fn validate(a: Allocator, module: []u32, module_type: ModuleType) !void {
+        const target_env: c_uint = switch (module_type) {
+            .shader => c.SPV_ENV_VULKAN_1_3,
+            .kernel => c.SPV_ENV_OPENCL_2_2,
+        };
+        const context = c.spvContextCreate(target_env);
         std.debug.assert(context != null); // Assume the context is always valid.
         defer c.spvContextDestroy(context);
 
@@ -810,6 +815,23 @@ const Vulkan = struct {
             std.log.warn("platform query '{s}' does not apply to vulkan!", .{platform_query});
         }
 
+        const features10: vk.PhysicalDeviceFeatures = .{
+            .shader_int_16 = vk.TRUE,
+            .shader_int_64 = vk.TRUE,
+            .shader_float_64 = vk.TRUE,
+        };
+
+        var features11: vk.PhysicalDeviceVulkan11Features = .{
+            .storage_push_constant_16 = vk.TRUE,
+        };
+
+        var features12: vk.PhysicalDeviceVulkan12Features = .{
+            .p_next = @ptrCast(&features11),
+            .buffer_device_address = vk.TRUE,
+            .shader_float_16 = vk.TRUE,
+            .shader_int_8 = vk.TRUE,
+        };
+
         if (options.device) |device_query| {
             for (pdevs) |pdev| {
                 const props = self.instance.getPhysicalDeviceProperties(pdev);
@@ -818,7 +840,7 @@ const Vulkan = struct {
                     continue;
                 }
 
-                if (!pdevHasBDASupport(self.instance, pdev)) {
+                if (!checkPhysicalDeviceFeatures(self.instance, pdev, features10, features11, features12)) {
                     fail("device '{s}' does not support buffer device address", .{name});
                 }
 
@@ -830,7 +852,7 @@ const Vulkan = struct {
             }
         } else {
             for (pdevs) |pdev| {
-                if (!pdevHasBDASupport(self.instance, pdev)) {
+                if (!checkPhysicalDeviceFeatures(self.instance, pdev, features10, features11, features12)) {
                     continue;
                 }
 
@@ -860,9 +882,6 @@ const Vulkan = struct {
             fail("no compute queue", .{});
         }
 
-        const features12: vk.PhysicalDeviceVulkan12Features = .{
-            .buffer_device_address = vk.TRUE,
-        };
         const dev = try self.instance.createDevice(self.pdev, &.{
             .p_next = @ptrCast(&features12),
             .queue_create_info_count = 1,
@@ -873,6 +892,7 @@ const Vulkan = struct {
                     .p_queue_priorities = &.{1},
                 },
             },
+            .p_enabled_features = &features10,
         }, null);
 
         const vkd = try a.create(Device.Wrapper);
@@ -970,15 +990,37 @@ const Vulkan = struct {
         }
     }
 
-    fn pdevHasBDASupport(instance: Instance, pdev: vk.PhysicalDevice) bool {
+    fn checkPhysicalDeviceFeatures(
+        instance: Instance,
+        pdev: vk.PhysicalDevice,
+        expected_features10: vk.PhysicalDeviceFeatures,
+        expected_features11: vk.PhysicalDeviceVulkan11Features,
+        expected_features12: vk.PhysicalDeviceVulkan12Features,
+    ) bool {
         var features12: vk.PhysicalDeviceVulkan12Features = .{};
-        var features: vk.PhysicalDeviceFeatures2 = .{
+        var features11: vk.PhysicalDeviceVulkan11Features = .{
             .p_next = @ptrCast(&features12),
+        };
+        var features2: vk.PhysicalDeviceFeatures2 = .{
+            .p_next = @ptrCast(&features11),
             .features = .{},
         };
-        features.p_next = &features12;
-        instance.getPhysicalDeviceFeatures2(pdev, &features);
-        return features12.buffer_device_address == vk.TRUE;
+        instance.getPhysicalDeviceFeatures2(pdev, &features2);
+        const features10 = &features2.features;
+
+        inline for (
+            .{ vk.PhysicalDeviceFeatures, vk.PhysicalDeviceVulkan11Features, vk.PhysicalDeviceVulkan12Features },
+            .{ &expected_features10, &expected_features11, &expected_features12 },
+            .{ features10, &features11, &features12 },
+        ) |T, expected, actual| {
+            inline for (std.meta.fields(T)) |field| {
+                if (field.type == vk.Bool32 and @field(expected, field.name) == vk.TRUE and @field(actual, field.name) == vk.FALSE) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     fn initKernel(self: *Vulkan, name: [:0]const u8, shader: vk.ShaderModule) !Kernel {
