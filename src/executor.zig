@@ -134,14 +134,15 @@ fn parseArgs(a: Allocator) !Options {
             \\`result` must be set to 1 if the test passes, or left 0 if the test fails.
             \\
             \\Options:
-            \\--platform|-p <platform>  OpenCL platform name to use. By default, uses the
-            \\                          first platform that has any devices available.
-            \\                          Note that the platform must support the
-            \\                          'cl_khr_il_program' extension.
-            \\--device|-d <device>      OpenCL device name to use. If --platform is left
-            \\                          unspecified, all devices of all platforms are
-            \\                          matched. By default, uses the first device of the
-            \\                          platform.
+            \\--platform|-p <platform>  OpenCL platform or Vulkan driver name to use. By
+            \\                          default, uses the first platform that has any
+            \\                          devices available. Note that for OpenCL, the
+            \\                          platform must support the 'cl_khr_il_program'
+            \\                          extension.
+            \\--device|-d <device>      OpenCL or Vulkan device name to use. If --platform
+            \\                          is left unspecified, all devices of all platforms
+            \\                          are matched. By default, uses the first device of
+            \\                          the platform.
             \\--verbose|-v              Turn on verbose logging.
             \\--reducing                Enable 'reducing' mode. This mode makes the executor
             \\                          always return 0 so that compile errors may be
@@ -817,10 +818,6 @@ const Vulkan = struct {
             fail("no vulkan devices available", .{});
         }
 
-        if (options.platform) |platform_query| {
-            std.log.warn("platform query '{s}' does not apply to vulkan!", .{platform_query});
-        }
-
         const features10: vk.PhysicalDeviceFeatures = .{
             .shader_int_16 = vk.TRUE,
             .shader_int_64 = vk.TRUE,
@@ -838,36 +835,42 @@ const Vulkan = struct {
             .shader_int_8 = vk.TRUE,
         };
 
-        if (options.device) |device_query| {
-            for (pdevs) |pdev| {
-                const props = self.instance.getPhysicalDeviceProperties(pdev);
-                const name = std.mem.sliceTo(&props.device_name, 0);
+        for (pdevs) |pdev| {
+            var props12: vk.PhysicalDeviceVulkan12Properties = undefined;
+            props12.s_type = .physical_device_vulkan_1_2_properties;
+            props12.p_next = null;
+
+            var props2: vk.PhysicalDeviceProperties2 = .{
+                .p_next = @ptrCast(&props12),
+                .properties = undefined,
+            };
+
+            self.instance.getPhysicalDeviceProperties2(pdev, &props2);
+
+            const name = std.mem.sliceTo(&props2.properties.device_name, 0);
+            const driver = std.mem.sliceTo(&props12.driver_name, 0);
+
+            if (options.device) |device_query| {
                 if (std.mem.indexOf(u8, name, device_query) == null) {
                     continue;
                 }
-
-                if (!checkPhysicalDeviceFeatures(self.instance, pdev, features10, features11, features12)) {
-                    fail("device '{s}' does not support buffer device address", .{name});
-                }
-
-                self.pdev = pdev;
-                self.props = props;
-                break;
-            } else {
-                fail("no such vulkan device: '{s}'", .{device_query});
             }
-        } else {
-            for (pdevs) |pdev| {
-                if (!checkPhysicalDeviceFeatures(self.instance, pdev, features10, features11, features12)) {
+
+            if (options.platform) |platform_query| {
+                if (std.mem.indexOf(u8, driver, platform_query) == null) {
                     continue;
                 }
-
-                self.pdev = pdev;
-                self.props = self.instance.getPhysicalDeviceProperties(self.pdev);
-                break;
-            } else {
-                fail("there are no devices that support buffer device address", .{});
             }
+
+            if (!checkPhysicalDeviceFeatures(self.instance, pdev, features10, features11, features12)) {
+                fail("device '{s}' does not support buffer device address", .{name});
+            }
+
+            self.pdev = pdev;
+            self.props = props2.properties;
+            break;
+        } else {
+            fail("there are no devices that support buffer device address or the specified device/platform", .{});
         }
 
         self.mem_props = self.instance.getPhysicalDeviceMemoryProperties(self.pdev);
@@ -941,6 +944,7 @@ const Vulkan = struct {
             const msg = try std.fmt.allocPrint(a, "compiling kernel '{s}'", .{entry_point.name});
             const init_kernel_node = kernels_node.start(msg, 0);
             defer init_kernel_node.end();
+            // std.log.debug("[{}/{}] compiling kernel {s}", .{i + 1, module.entry_points.len, name});
             self.kernels[i] = try self.initKernel(entry_point.name, shader);
         }
         kernels_node.end();
