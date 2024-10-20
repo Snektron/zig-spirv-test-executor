@@ -14,8 +14,10 @@ ap.add_argument('compiler', type=str, help='Path to Zig compiler')
 ap.add_argument('test', type=str, help='Path to file to test')
 ap.add_argument('--todo', default=False, action='store_true', help='Print the number of tests that still need to be done')
 ap.add_argument('--recheck', default=False, action='store_true', help='Re-check all tests')
-ap.add_argument('--platform', default='Portable', help='Override the OpenCL runtime used for testing')
+ap.add_argument('--platform', default=None, help='Override the OpenCL platform used for testing')
+ap.add_argument('--device', default=None, help='Override the OpenCL/Vulkan device used for testing')
 ap.add_argument('--timeout', default=30, help='Maximum number of seconds to wait for a test to finish')
+ap.add_argument('--api', choices=['opencl','vulkan'], default='opencl', help='API to use')
 
 args = ap.parse_args()
 
@@ -162,7 +164,7 @@ def run_test(test, tmp_path, tmp_file):
     tmp_file.flush()
 
     try:
-        result = subprocess.run([
+        a = [
             args.compiler,
             'test',
             tmp_path,
@@ -170,18 +172,21 @@ def run_test(test, tmp_path, tmp_file):
             os.path.join(basedir, 'src', 'test_runner.zig'),
             '-fno-compiler-rt',
             '-target',
-            'spirv64-opencl-gnu',
+            f'spirv64-{args.api}-gnu',
             '-mcpu',
             'generic+Int64+Int16+Int8+Float64+Float16',
             '-fno-llvm',
             '--test-cmd',
             os.path.join(basedir, 'zig-out', 'bin', 'zig-spirv-test-executor'),
             '--test-cmd-bin',
-            '--test-cmd',
-            '--platform',
-            '--test-cmd',
-            args.platform,
-        ], capture_output=True, timeout=args.timeout)
+        ]
+
+        if args.platform is not None:
+            a += ['--test-cmd', '-p', '--test-cmd', args.platform]
+        if args.device is not None:
+            a += ['--test-cmd', '-d', '--test-cmd', args.device]
+
+        result = subprocess.run(a, capture_output=True, timeout=args.timeout)
     except subprocess.TimeoutExpired:
         test.error = 'timeout expired'
         return
