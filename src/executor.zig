@@ -498,7 +498,10 @@ pub const OpenCL = struct {
     err_buf: cl.Buffer(u16),
     known_platform: KnownPlatform,
 
-    fn init(a: Allocator, module: Module, options: Options) !OpenCL {
+    fn init(a: Allocator, module: Module, options: Options, root_node: std.Progress.Node) !OpenCL {
+        const init_node = root_node.start("Initialize OpenCL", 0);
+        defer init_node.end();
+
         std.log.debug("initializing opencl", .{});
         const platform, const device = try pickPlatformAndDevice(a, options);
         const platform_name = try platform.getName(a);
@@ -775,7 +778,10 @@ const Vulkan = struct {
 
     query_pool: vk.QueryPool,
 
-    fn init(a: Allocator, module: Module, options: Options) !Vulkan {
+    fn init(a: Allocator, module: Module, options: Options, root_node: std.Progress.Node) !Vulkan {
+        const init_node = root_node.start("Initialize Vulkan", 1);
+        defer init_node.end();
+
         std.log.debug("initializing vulkan", .{});
 
         var self: Vulkan = undefined;
@@ -867,7 +873,6 @@ const Vulkan = struct {
         self.mem_props = self.instance.getPhysicalDeviceMemoryProperties(self.pdev);
 
         std.log.debug("using vulkan device: '{s}'", .{std.mem.sliceTo(&self.props.device_name, 0)});
-        std.log.debug("initializing device", .{});
 
         const families = try self.instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pdev, a);
         for (families, 0..) |props, i| {
@@ -916,6 +921,7 @@ const Vulkan = struct {
         }, &cmd_bufs);
         self.cmd_buf = cmd_bufs[0];
 
+        std.log.debug("compiling shaders", .{});
         const shader = try self.dev.createShaderModule(&.{
             .code_size = module.words.len * @sizeOf(spirv.Word),
             .p_code = module.words.ptr,
@@ -930,9 +936,14 @@ const Vulkan = struct {
         };
         errdefer self.deinitKernels();
 
+        const kernels_node = root_node.start("Compiling Kernels", module.entry_points.len);
         for (module.entry_points, 0..) |entry_point, i| {
+            const msg = try std.fmt.allocPrint(a, "compiling kernel '{s}'", .{entry_point.name});
+            const init_kernel_node = kernels_node.start(msg, 0);
+            defer init_kernel_node.end();
             self.kernels[i] = try self.initKernel(entry_point.name, shader);
         }
+        kernels_node.end();
 
         self.err_buf = try self.dev.createBuffer(&.{
             .size = @sizeOf(u16),
@@ -1155,10 +1166,7 @@ const Vulkan = struct {
     }
 };
 
-fn runTests(api: anytype, module: Module) !bool {
-    const root_node = std.Progress.start(.{
-        .estimated_total_items = 1,
-    });
+fn runTests(api: anytype, module: Module, root_node: std.Progress.Node) !bool {
     const test_root_node = root_node.start("Test", module.entry_points.len);
     const have_tty = std.io.getStdErr().isTty();
 
@@ -1234,18 +1242,22 @@ pub fn main() !u8 {
         return 0;
     }
 
+    const root_node = std.Progress.start(.{
+        .estimated_total_items = 2,
+    });
+
     const has_fails = switch (module.module_type) {
         .kernel => blk: {
             std.log.debug("running module under opencl", .{});
-            var opencl = try OpenCL.init(a, module, options);
+            var opencl = try OpenCL.init(a, module, options, root_node);
             defer opencl.deinit();
-            break :blk try runTests(&opencl, module);
+            break :blk try runTests(&opencl, module, root_node);
         },
         .shader => blk: {
             std.log.debug("running module under vulkan", .{});
-            var vulkan = try Vulkan.init(a, module, options);
+            var vulkan = try Vulkan.init(a, module, options, root_node);
             defer vulkan.deinit();
-            break :blk try runTests(&vulkan, module);
+            break :blk try runTests(&vulkan, module, root_node);
         },
     };
 
