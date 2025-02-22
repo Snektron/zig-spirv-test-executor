@@ -863,7 +863,7 @@ const Vulkan = struct {
             }
 
             if (!checkPhysicalDeviceFeatures(self.instance, pdev, features10, features11, features12)) {
-                fail("device '{s}' does not support buffer device address", .{name});
+                fail("device '{s}' does not support the required features", .{name});
             }
 
             self.pdev = pdev;
@@ -1030,6 +1030,7 @@ const Vulkan = struct {
         ) |T, expected, actual| {
             inline for (std.meta.fields(T)) |field| {
                 if (field.type == vk.Bool32 and @field(expected, field.name) == vk.TRUE and @field(actual, field.name) == vk.FALSE) {
+                    std.log.debug("device does not support {s}", .{field.name});
                     return false;
                 }
             }

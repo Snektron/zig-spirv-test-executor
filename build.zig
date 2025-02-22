@@ -45,14 +45,12 @@ pub fn build(b: *std.Build) void {
             .cpu_arch = .spirv64,
             .os_tag = .opencl,
             .abi = .gnu,
-            .cpu_features_add = std.Target.spirv.featureSet(&.{ .Int64, .Int16, .Int8, .Float64, .Float16 }),
+            .cpu_features_add = std.Target.spirv.featureSet(&.{ .int64, .int16, .int8, .float64, .float16 }),
         }),
         .optimize = optimize,
-        // .test_runner = b.path("src/test_runner.zig"),
         .use_llvm = false,
     });
 
-    test_kernel.test_server_mode = false;
     const run_test = b.addRunArtifact(test_kernel);
 
     const test_step = b.step("test", "Run the test kernel");

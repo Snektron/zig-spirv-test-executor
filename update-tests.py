@@ -216,6 +216,10 @@ def run_test(test, tmp_path, tmp_file):
             error = 'validation failure'
         elif 'cannot call function pointers' in stderr:
             error = 'uses function pointers'
+        elif 'non-mergable' in stderr:
+            error = 'violates logical pointer rules'
+        elif 'illegal pointer arithmetic' in stderr:
+            error = 'violates logical pointer rules'
         else:
             tags = []
             todos = []
