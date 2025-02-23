@@ -164,6 +164,11 @@ def run_test(test, tmp_path, tmp_file):
     tmp_file.flush()
 
     try:
+        if args.api == 'vulkan':
+            cpu = 'vulkan_v1_2'
+        else:
+            cpu = 'opencl_v2'
+
         a = [
             args.compiler,
             'test',
@@ -174,7 +179,7 @@ def run_test(test, tmp_path, tmp_file):
             '-target',
             f'spirv64-{args.api}-gnu',
             '-mcpu',
-            'generic+Int64+Int16+Int8+Float64+Float16',
+            f'{cpu}+int8+int16+int64+float64+float16',
             '-fno-llvm',
             '--test-cmd',
             os.path.join(basedir, 'zig-out', 'bin', 'zig-spirv-test-executor'),
