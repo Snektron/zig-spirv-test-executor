@@ -290,6 +290,12 @@ const Module = struct {
                         // n: interface (variable)
                         const name_ptr = std.mem.sliceAsBytes(inst.operands[2..]);
                         const name = std.mem.sliceTo(name_ptr, 0);
+                        // The default test executor in Zig also compiles in the 'main' function,
+                        // which is not a valid test. Just skip anything which' name doesn't look
+                        // like a Zig test.
+                        if (!std.mem.startsWith(u8, name, "test ")) {
+                            continue;
+                        }
                         try entry_points.append(.{
                             .id = inst.operands[1],
                             .name = name_ptr[0..name.len :0],
