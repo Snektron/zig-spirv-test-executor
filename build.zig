@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
             .cpu_arch = .spirv64,
             .os_tag = .opencl,
             .abi = .gnu,
-            .cpu_features_add = std.Target.spirv.featureSet(&.{ .int64, .int16, .int8, .float64, .float16 }),
+            .cpu_features_add = std.Target.spirv.featureSet(&.{ .int64, .float64, .float16 }),
         }),
         .optimize = optimize,
         .use_llvm = false,

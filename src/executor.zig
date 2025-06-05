@@ -232,7 +232,7 @@ const Module = struct {
             path,
             std.math.maxInt(usize),
             1 * 1024 * 1024,
-            @alignOf(spirv.Word),
+            .of(spirv.Word),
             null,
         ) catch |err| {
             fail("failed to open module '{s}': {s}", .{ path, @errorName(err) });
@@ -746,9 +746,9 @@ const Vulkan = struct {
         "VK_LAYER_KHRONOS_validation",
     };
 
-    const BaseDispatch = vk.BaseWrapper(apis);
-    const Instance = vk.InstanceProxy(apis);
-    const Device = vk.DeviceProxy(apis);
+    const BaseDispatch = vk.BaseWrapper;
+    const Instance = vk.InstanceProxy;
+    const Device = vk.DeviceProxy;
 
     const PushConstantBuffer = extern struct {
         err_buf: vk.DeviceAddress,
@@ -780,8 +780,11 @@ const Vulkan = struct {
 
     err_buf: vk.Buffer,
     err_buf_mem: vk.DeviceMemory,
-    err_buf_addr: vk.DeviceAddress,
     err_ptr: *u16,
+
+    desc_pool: vk.DescriptorPool,
+    desc_set_layout: vk.DescriptorSetLayout,
+    desc_set: vk.DescriptorSet,
 
     query_pool: vk.QueryPool,
 
@@ -799,22 +802,22 @@ const Vulkan = struct {
         const vk_get_instance_proc_addr = self.lib.lookup(vk.PfnGetInstanceProcAddr, "vkGetInstanceProcAddr") orelse {
             fail("libvulkan.so.1 doesn't provide vkGetInstanceProcAddr", .{});
         };
-        self.vkb = try BaseDispatch.load(vk_get_instance_proc_addr);
+        self.vkb = BaseDispatch.load(vk_get_instance_proc_addr);
 
         const instance = try self.vkb.createInstance(&.{
             .p_application_info = &.{
                 .p_application_name = "zig spir-v test executor",
-                .application_version = vk.makeApiVersion(0, 0, 0, 0),
+                .application_version = @bitCast(vk.makeApiVersion(0, 0, 0, 0)),
                 .p_engine_name = "super cool engine",
-                .engine_version = vk.makeApiVersion(0, 0, 0, 0),
-                .api_version = vk.API_VERSION_1_3,
+                .engine_version = @bitCast(vk.makeApiVersion(0, 0, 0, 0)),
+                .api_version = @bitCast(vk.API_VERSION_1_3),
             },
             .enabled_layer_count = required_layers.len,
             .pp_enabled_layer_names = &required_layers,
         }, null);
 
         const vki = try a.create(Instance.Wrapper);
-        vki.* = try Instance.Wrapper.load(instance, self.vkb.dispatch.vkGetInstanceProcAddr);
+        vki.* = Instance.Wrapper.load(instance, self.vkb.dispatch.vkGetInstanceProcAddr.?);
         self.instance = Instance.init(instance, vki);
         errdefer self.instance.destroyInstance(null);
 
@@ -832,6 +835,8 @@ const Vulkan = struct {
 
         var features11: vk.PhysicalDeviceVulkan11Features = .{
             .storage_push_constant_16 = vk.TRUE,
+            .variable_pointers = vk.TRUE,
+            .variable_pointers_storage_buffer = vk.TRUE,
         };
 
         var features12: vk.PhysicalDeviceVulkan12Features = .{
@@ -910,7 +915,7 @@ const Vulkan = struct {
         }, null);
 
         const vkd = try a.create(Device.Wrapper);
-        vkd.* = try Device.Wrapper.load(dev, self.instance.wrapper.dispatch.vkGetDeviceProcAddr);
+        vkd.* = Device.Wrapper.load(dev, self.instance.wrapper.dispatch.vkGetDeviceProcAddr.?);
         self.dev = Device.init(dev, vkd);
         errdefer self.dev.destroyDevice(null);
 
@@ -945,22 +950,11 @@ const Vulkan = struct {
         };
         errdefer self.deinitKernels();
 
-        const kernels_node = root_node.start("Compiling Kernels", module.entry_points.len);
-        for (module.entry_points, 0..) |entry_point, i| {
-            const msg = try std.fmt.allocPrint(a, "compiling kernel '{s}'", .{entry_point.name});
-            const init_kernel_node = kernels_node.start(msg, 0);
-            defer init_kernel_node.end();
-            // std.log.debug("[{}/{}] compiling kernel {s}", .{i + 1, module.entry_points.len, name});
-            self.kernels[i] = try self.initKernel(entry_point.name, shader);
-        }
-        kernels_node.end();
-
         self.err_buf = try self.dev.createBuffer(&.{
             .size = @sizeOf(u16),
             .usage = .{
                 .transfer_dst_bit = true,
                 .storage_buffer_bit = true,
-                .shader_device_address_bit = true,
             },
             .sharing_mode = .exclusive,
         }, null);
@@ -975,13 +969,61 @@ const Vulkan = struct {
         errdefer self.dev.freeMemory(self.err_buf_mem, null);
         try self.dev.bindBufferMemory(self.err_buf, self.err_buf_mem, 0);
 
-        self.err_buf_addr = self.dev.getBufferDeviceAddress(&.{
-            .buffer = self.err_buf,
-        });
-
-        std.log.debug("error buffer device address: 0x{x:0>16}", .{self.err_buf_addr});
-
         self.err_ptr = @ptrCast(@alignCast(try self.dev.mapMemory(self.err_buf_mem, 0, @sizeOf(u16), .{})));
+
+        self.desc_pool = try vkd.createDescriptorPool(dev, &.{
+            .pool_size_count = @intCast(1),
+            .p_pool_sizes = &.{.{ .type = .storage_buffer, .descriptor_count = 1 }},
+            .max_sets = 1,
+        }, null);
+        self.desc_set_layout = try vkd.createDescriptorSetLayout(
+            dev,
+            &.{
+                .binding_count = 1,
+                .p_bindings = &.{.{
+                    .binding = 0,
+                    .descriptor_type = .storage_buffer,
+                    .descriptor_count = 1,
+                    .stage_flags = .{ .compute_bit = true },
+                }},
+            },
+            null,
+        );
+        try vkd.allocateDescriptorSets(
+            dev,
+            &.{
+                .descriptor_pool = self.desc_pool,
+                .descriptor_set_count = 1,
+                .p_set_layouts = @ptrCast(&self.desc_set_layout),
+            },
+            @ptrCast(&self.desc_set),
+        );
+        vkd.updateDescriptorSets(dev, 1, &.{
+            .{
+                .dst_set = self.desc_set,
+                .dst_binding = 0,
+                .dst_array_element = 0,
+                .descriptor_count = 1,
+                .descriptor_type = .storage_buffer,
+                .p_buffer_info = &.{.{
+                    .buffer = self.err_buf,
+                    .offset = 0,
+                    .range = vk.WHOLE_SIZE,
+                }},
+                .p_image_info = undefined,
+                .p_texel_buffer_view = undefined,
+            },
+        }, 0, null);
+
+        const kernels_node = root_node.start("Compiling Kernels", module.entry_points.len);
+        for (module.entry_points, 0..) |entry_point, i| {
+            const msg = try std.fmt.allocPrint(a, "compiling kernel '{s}'", .{entry_point.name});
+            const init_kernel_node = kernels_node.start(msg, 0);
+            defer init_kernel_node.end();
+            // std.log.debug("[{}/{}] compiling kernel {s}", .{i + 1, module.entry_points.len, name});
+            self.kernels[i] = try self.initKernel(entry_point.name, shader);
+        }
+        kernels_node.end();
 
         self.query_pool = try self.dev.createQueryPool(&.{
             .query_type = .timestamp,
@@ -996,6 +1038,8 @@ const Vulkan = struct {
         self.dev.unmapMemory(self.err_buf_mem);
         self.dev.freeMemory(self.err_buf_mem, null);
         self.dev.destroyBuffer(self.err_buf, null);
+        self.dev.destroyDescriptorSetLayout(self.desc_set_layout, null);
+        self.dev.destroyDescriptorPool(self.desc_pool, null);
         self.deinitKernels();
         self.dev.destroyCommandPool(self.cmd_pool, null);
         self.dev.destroyDevice(null);
@@ -1046,16 +1090,9 @@ const Vulkan = struct {
     }
 
     fn initKernel(self: *Vulkan, name: [:0]const u8, shader: vk.ShaderModule) !Kernel {
-        // TODO: Push constant range and stuff
         const pipeline_layout = try self.dev.createPipelineLayout(&.{
-            .push_constant_range_count = 1,
-            .p_push_constant_ranges = &.{
-                .{
-                    .stage_flags = .{ .compute_bit = true },
-                    .offset = 0,
-                    .size = @sizeOf(PushConstantBuffer),
-                },
-            },
+            .p_set_layouts = &.{self.desc_set_layout},
+            .set_layout_count = 1,
         }, null);
 
         var pipelines: [1]vk.Pipeline = undefined;
@@ -1129,16 +1166,15 @@ const Vulkan = struct {
 
         self.dev.cmdWriteTimestamp(self.cmd_buf, .{ .compute_shader_bit = true }, self.query_pool, 0);
         self.dev.cmdBindPipeline(self.cmd_buf, .compute, kernel.pipeline);
-        const push_constants: PushConstantBuffer = .{
-            .err_buf = self.err_buf_addr,
-        };
-        self.dev.cmdPushConstants(
+        self.dev.cmdBindDescriptorSets(
             self.cmd_buf,
+            .compute,
             kernel.pipeline_layout,
-            .{ .compute_bit = true },
             0,
-            @sizeOf(PushConstantBuffer),
-            @ptrCast(&push_constants),
+            1,
+            &.{self.desc_set},
+            0,
+            null,
         );
         self.dev.cmdDispatch(self.cmd_buf, 1, 1, 1);
         self.dev.cmdWriteTimestamp(self.cmd_buf, .{ .compute_shader_bit = true }, self.query_pool, 1);
