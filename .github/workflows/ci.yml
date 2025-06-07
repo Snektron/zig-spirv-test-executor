@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, ci ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 6 * * *'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Compute dep revisions
+      id: dephash
+      run: |
+        set -eux
+        echo "headers=$(git ls-remote https://github.com/KhronosGroup/OpenCL-Headers.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+        echo "icd=$(git ls-remote https://github.com/KhronosGroup/OpenCL-ICD-Loader.git HEAD | cut -f1)"  >> "$GITHUB_OUTPUT"
+        echo "spirv=$(git ls-remote https://github.com/KhronosGroup/SPIRV-Tools.git HEAD | cut -f1)"      >> "$GITHUB_OUTPUT"
+
+    - name: Restore compiled OpenCL deps
+      id: cache-opencl
+      uses: actions/cache@v4
+      with:
+        path: |
+          OpenCL-Headers
+          OpenCL-ICD-Loader
+          SPIRV-Tools
+        key: ${{ runner.os }}-opencl-${{ steps.dephash.outputs.headers }}-${{ steps.dephash.outputs.icd }}-${{ steps.dephash.outputs.spirv }}-0
+        restore-keys: |
+          ${{ runner.os }}-opencl-
+
+    - name: Fetch apt packages
+      run: |
+        set -euxo pipefail
+        sudo apt-get update
+        sudo apt-get install -y git cmake ninja-build \
+                            clinfo ocl-icd-opencl-dev pocl-opencl-icd mesa-opencl-icd
+
+    - name: Build OpenCL deps
+      if: steps.cache-opencl.outputs.cache-hit != 'true'
+      run: |
+        set -euxo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+
+        git clone --single-branch --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git
+        (
+          cd OpenCL-Headers
+          cmake -B build -G Ninja -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+        )
+
+        git clone --single-branch --depth 1 https://github.com/KhronosGroup/OpenCL-ICD-Loader.git
+        (
+          cd OpenCL-ICD-Loader
+          cmake -B build -G Ninja -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+        )
+
+        git clone --single-branch --depth 1 --recursive https://github.com/KhronosGroup/SPIRV-Tools.git
+        (
+          cd SPIRV-Tools
+          python3 utils/git-sync-deps
+          cmake -B build -G Ninja -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+        )
+
+    - name: Install OpenCL deps into /usr/local
+      run: |
+        set -euxo pipefail
+        sudo cmake --install OpenCL-Headers/build
+        sudo cmake --install OpenCL-ICD-Loader/build
+        sudo cmake --install SPIRV-Tools/build
+        sudo ldconfig
+        clinfo
+
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+#        version: 0.14.1
+        version: 0.15.0-dev.734+adc4418ba
+
+#    - name: Check formatting
+#      run: zig fmt --check .
+
+    - name: Build executor
+      run: zig build
+
+    - name: Run tests
+      env:
+        RUST_BACKTRACE: full
+        RUSTICL_ENABLE: llvmpipe
+      run: |
+        zig test src/test_kernel.zig \
+            --test-runner src/test_runner.zig \
+            -target spirv64-opencl-none \
+            -mcpu generic+int64+float64+float16+kernel+addresses \
+            -fno-llvm \
+            --test-cmd zig-out/bin/zig-spirv-test-executor \
+            --test-cmd --platform \
+            --test-cmd rusticl \
+            --test-cmd-bin
