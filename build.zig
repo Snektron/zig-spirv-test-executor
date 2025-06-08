@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
         .target = b.resolveTargetQuery(.{
             .cpu_arch = .spirv64,
             .os_tag = .opencl,
-            .abi = .gnu,
+            .abi = .none,
             .cpu_features_add = std.Target.spirv.featureSet(&.{ .int64, .float64, .float16 }),
         }),
         .optimize = optimize,
