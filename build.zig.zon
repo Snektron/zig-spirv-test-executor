@@ -2,14 +2,15 @@
     .name = .zig_spirv_test_executor,
     .fingerprint = 0xb63e0083c7fb96c7,
     .version = "0.1.0",
+    .minimum_zig_version = "0.15.0-dev.1160+e43617e68",
     .dependencies = .{
         .opencl = .{
             .url = "https://github.com/Snektron/opencl-zig/archive/edde6cc92611ca526ce652d81b1688cb03c084bb.tar.gz",
             .hash = "opencl-0.1.0-AAAAAE2aAADOK2DXdbKROz-89ekS6blxrL3Bdx_CXhBr",
         },
         .vulkan_zig = .{
-            .url = "https://github.com/Snektron/vulkan-zig/archive/fdbe6d60d1a937ee64f4e37c2acd0c76a7588f24.tar.gz",
-            .hash = "vulkan-0.0.0-r7Ytx2dUAwDhoUvuIqliqPUbyDZZi0bl_CQIwspUpHs_",
+            .url = "https://github.com/Snektron/vulkan-zig/archive/e492b17810d775986e2eefd751f5526d9c3b2618.tar.gz",
+            .hash = "vulkan-0.0.0-r7Ytx5w-AwB0hzckD1mPHma0VgtiJ2DHj5dvgzWVwk2e",
         },
         .vulkan_headers = .{
             .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/v1.4.309.tar.gz",

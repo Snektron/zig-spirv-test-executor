@@ -10,7 +10,7 @@ const builtin = @import("builtin");
 // test runner.
 
 comptime {
-    if (builtin.zig_backend != .stage2_spirv64) {
+    if (builtin.zig_backend != .stage2_spirv) {
         @compileError("this test runner is only intended for spir-v");
     }
 }

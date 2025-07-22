@@ -17,14 +17,18 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "zig-spirv-test-executor",
-        .root_source_file = b.path("src/executor.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    exe.root_module.addImport("opencl", opencl);
-    exe.root_module.addAnonymousImport("vulkan", .{
-        .root_source_file = vk_gen_cmd.addOutputFileArg("vk.zig"),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/executor.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "opencl", .module = opencl },
+                .{ .name = "vulkan", .module = b.createModule(.{
+                    .root_source_file = vk_gen_cmd.addOutputFileArg("vk.zig"),
+                }) },
+            },
+        }),
     });
     exe.linkSystemLibrary("SPIRV-Tools-shared");
     b.installArtifact(exe);
@@ -40,14 +44,21 @@ pub fn build(b: *std.Build) void {
 
     const test_kernel = b.addTest(.{
         .name = "test",
-        .root_source_file = b.path("src/test_kernel.zig"),
-        .target = b.resolveTargetQuery(.{
-            .cpu_arch = .spirv64,
-            .os_tag = .opencl,
-            .abi = .gnu,
-            .cpu_features_add = std.Target.spirv.featureSet(&.{ .int64, .float64, .float16 }),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test_kernel.zig"),
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .spirv64,
+                .os_tag = .opencl,
+                .abi = .none,
+                .cpu_features_add = std.Target.spirv.featureSet(&.{
+                    .int64,
+                    .float64,
+                    .float16,
+                    .generic_pointer,
+                }),
+            }),
+            .optimize = optimize,
         }),
-        .optimize = optimize,
         .use_llvm = false,
     });
 

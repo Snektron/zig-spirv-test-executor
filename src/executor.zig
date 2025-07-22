@@ -115,8 +115,9 @@ fn parseArgs(a: Allocator) !Options {
     }
 
     if (help) {
-        const out = std.io.getStdOut();
-        try out.writer().writeAll(
+        const out: std.fs.File = .stdout();
+        var writer = out.writer(&.{});
+        try writer.interface.writeAll(
             \\usage: zig-spirv-test-executor [options...] <spir-v module path>
             \\
             \\This program can be used to execute tests in a SPIR-V binary produced by
@@ -1215,7 +1216,7 @@ const Vulkan = struct {
 
 fn runTests(api: anytype, module: Module, root_node: std.Progress.Node) !bool {
     const test_root_node = root_node.start("Test", module.entry_points.len);
-    const have_tty = std.io.getStdErr().isTty();
+    const have_tty = std.fs.File.stderr().isTty();
 
     var ok_count: usize = 0;
     var fail_count: usize = 0;
