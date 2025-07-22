@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.15.0-dev.1160+e43617e68",
     .dependencies = .{
         .opencl = .{
-            .url = "https://github.com/Snektron/opencl-zig/archive/edde6cc92611ca526ce652d81b1688cb03c084bb.tar.gz",
-            .hash = "opencl-0.1.0-AAAAAE2aAADOK2DXdbKROz-89ekS6blxrL3Bdx_CXhBr",
+            .url = "https://github.com/Snektron/opencl-zig/archive/86e1eb15c60b85c9d57bd71ff9fa62d4006a85e5.tar.gz",
+            .hash = "opencl-0.1.0-W4Df3cmSAAA77y0UNCWbx_0BGB62alV4-QIhoX1JGZ_z",
         },
         .vulkan_zig = .{
             .url = "https://github.com/Snektron/vulkan-zig/archive/e492b17810d775986e2eefd751f5526d9c3b2618.tar.gz",
