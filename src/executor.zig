@@ -503,7 +503,7 @@ pub const OpenCL = struct {
     context: cl.Context,
     queue: cl.CommandQueue,
     program: cl.Program,
-    err_buf: cl.Buffer(u16),
+    err_buf: cl.Buffer(u32),
     known_platform: KnownPlatform,
 
     fn init(a: Allocator, module: Module, options: Options, root_node: std.Progress.Node) !OpenCL {
@@ -555,7 +555,7 @@ pub const OpenCL = struct {
         };
         std.log.debug("program built successfully", .{});
 
-        const err_buf = try cl.Buffer(u16).create(context, .{ .read_write = true }, 1);
+        const err_buf = try cl.Buffer(u32).create(context, .{ .read_write = true }, 1);
         errdefer err_buf.release();
 
         return .{
@@ -577,7 +577,7 @@ pub const OpenCL = struct {
         self.* = undefined;
     }
 
-    fn runTest(self: *OpenCL, name: [:0]const u8) !struct { u16, u64 } {
+    fn runTest(self: *OpenCL, name: [:0]const u8) !struct { u32, u64 } {
         const kernel = try cl.Kernel.create(self.program, name);
         defer kernel.release();
 
@@ -585,7 +585,7 @@ pub const OpenCL = struct {
         // that we know if the kernel didn't write
 
         const write_complete = try self.queue.enqueueWriteBuffer(
-            u16,
+            u32,
             self.err_buf,
             false,
             0,
@@ -593,7 +593,7 @@ pub const OpenCL = struct {
             &.{},
         );
 
-        try kernel.setArg(cl.Buffer(u16), 0, self.err_buf);
+        try kernel.setArg(cl.Buffer(u32), 0, self.err_buf);
         const kernel_complete = try self.queue.enqueueNDRangeKernel(
             kernel,
             null,
@@ -603,9 +603,9 @@ pub const OpenCL = struct {
         );
         defer kernel_complete.release();
 
-        var result: u16 = undefined;
+        var result: u32 = undefined;
         const read_complete = try self.queue.enqueueReadBuffer(
-            u16,
+            u32,
             self.err_buf,
             false,
             0,
@@ -751,10 +751,6 @@ const Vulkan = struct {
     const Instance = vk.InstanceProxy;
     const Device = vk.DeviceProxy;
 
-    const PushConstantBuffer = extern struct {
-        err_buf: vk.DeviceAddress,
-    };
-
     const Kernel = struct {
         name: []const u8,
         pipeline_layout: vk.PipelineLayout,
@@ -781,7 +777,7 @@ const Vulkan = struct {
 
     err_buf: vk.Buffer,
     err_buf_mem: vk.DeviceMemory,
-    err_ptr: *u16,
+    err_ptr: *u32,
 
     desc_pool: vk.DescriptorPool,
     desc_set_layout: vk.DescriptorSetLayout,
@@ -835,7 +831,6 @@ const Vulkan = struct {
         };
 
         var features11: vk.PhysicalDeviceVulkan11Features = .{
-            .storage_push_constant_16 = vk.TRUE,
             .variable_pointers = vk.TRUE,
             .variable_pointers_storage_buffer = vk.TRUE,
         };
@@ -952,7 +947,7 @@ const Vulkan = struct {
         errdefer self.deinitKernels();
 
         self.err_buf = try self.dev.createBuffer(&.{
-            .size = @sizeOf(u16),
+            .size = @sizeOf(u32),
             .usage = .{
                 .transfer_dst_bit = true,
                 .storage_buffer_bit = true,
@@ -970,7 +965,7 @@ const Vulkan = struct {
         errdefer self.dev.freeMemory(self.err_buf_mem, null);
         try self.dev.bindBufferMemory(self.err_buf, self.err_buf_mem, 0);
 
-        self.err_ptr = @ptrCast(@alignCast(try self.dev.mapMemory(self.err_buf_mem, 0, @sizeOf(u16), .{})));
+        self.err_ptr = @ptrCast(@alignCast(try self.dev.mapMemory(self.err_buf_mem, 0, @sizeOf(u32), .{})));
 
         self.desc_pool = try vkd.createDescriptorPool(dev, &.{
             .pool_size_count = @intCast(1),
@@ -1148,7 +1143,7 @@ const Vulkan = struct {
         }, null);
     }
 
-    fn runTest(self: *Vulkan, name: [:0]const u8) !struct { u16, u64 } {
+    fn runTest(self: *Vulkan, name: [:0]const u8) !struct { u32, u64 } {
         self.err_ptr.* = poison_error_code;
 
         // TODO: Improve this
