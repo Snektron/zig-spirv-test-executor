@@ -13,6 +13,13 @@ pub fn build(b: *std.Build) void {
         .registry = b.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
     }).module("vulkan-zig");
 
+    // TODO: replace this with translate-c directly going forward.
+    const spirv_tools = b.addTranslateC(.{
+        .root_source_file = b.path("src/spirv_tools.h"),
+        .target = target,
+        .optimize = optimize,
+    }).createModule();
+
     const exe = b.addExecutable(.{
         .name = "zig-spirv-test-executor",
         .root_module = b.createModule(.{
@@ -23,17 +30,15 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "opencl", .module = opencl },
                 .{ .name = "vulkan", .module = vulkan },
+                .{ .name = "spirv-tools", .module = spirv_tools },
             },
         }),
     });
-    exe.linkSystemLibrary("SPIRV-Tools-shared");
+    exe.root_module.linkSystemLibrary("SPIRV-Tools-shared", .{});
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
