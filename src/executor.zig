@@ -3,9 +3,7 @@ const Allocator = std.mem.Allocator;
 const cl = @import("opencl");
 const vk = @import("vulkan");
 
-const c = @cImport({
-    @cInclude("spirv-tools/libspirv.h");
-});
+const c = @import("spirv-tools");
 
 const poison_error_code = 0xAAAA;
 
@@ -79,13 +77,14 @@ const Options = struct {
     disable_workarounds: bool,
 };
 
-fn parseArgs(a: Allocator) !Options {
-    var args = try std.process.argsWithAllocator(a);
+fn parseArgs(init: std.process.Init) !Options {
+    var args = try std.process.Args.iterateAllocator(init.minimal.args, init.arena.allocator());
     _ = args.next(); // executable name
 
-    var platform: ?[]const u8 = std.posix.getenv("ZVTX_PLATFORM");
-    var device: ?[]const u8 = std.posix.getenv("ZVTX_DEVICE");
-    var verbose: bool = if (std.posix.getenv("ZVTX_VERBOSE")) |verbose|
+    const environ = init.environ_map;
+    var platform: ?[]const u8 = environ.get("ZVTX_PLATFORM");
+    var device: ?[]const u8 = environ.get("ZVTX_DEVICE");
+    var verbose: bool = if (environ.get("ZVTX_VERBOSE")) |verbose|
         !std.mem.eql(u8, verbose, "0")
     else
         false;
@@ -115,8 +114,8 @@ fn parseArgs(a: Allocator) !Options {
     }
 
     if (help) {
-        const out: std.fs.File = .stdout();
-        var writer = out.writer(&.{});
+        const out: std.Io.File = .stdout();
+        var writer = out.writer(init.io, &.{});
         try writer.interface.writeAll(
             \\usage: zig-spirv-test-executor [options...] <spir-v module path>
             \\
@@ -225,14 +224,14 @@ const Module = struct {
     entry_points: []const EntryPoint,
     error_names: []const []const u8,
 
-    fn load(a: Allocator, path: []const u8) !Module {
+    fn load(io: std.Io, a: Allocator, path: []const u8) !Module {
         std.log.debug("loading spir-v module '{s}'", .{path});
 
-        const module_bytes = std.fs.cwd().readFileAllocOptions(
-            a,
+        const module_bytes = std.Io.Dir.cwd().readFileAllocOptions(
+            io,
             path,
-            std.math.maxInt(usize),
-            1 * 1024 * 1024,
+            a,
+            .unlimited,
             .of(spirv.Word),
             null,
         ) catch |err| {
@@ -255,7 +254,7 @@ const Module = struct {
 
         std.log.debug("scanning module for entry points", .{});
 
-        var entry_points = std.ArrayList(EntryPoint).init(a);
+        var entry_points: std.ArrayList(EntryPoint) = .empty;
         var maybe_error_names: ?[]const u8 = null;
         var maybe_module_type: ?ModuleType = null;
 
@@ -297,7 +296,7 @@ const Module = struct {
                         if (!std.mem.startsWith(u8, name, "test ")) {
                             continue;
                         }
-                        try entry_points.append(.{
+                        try entry_points.append(a, .{
                             .id = inst.operands[1],
                             .name = name_ptr[0..name.len :0],
                         });
@@ -315,18 +314,18 @@ const Module = struct {
                 break :blk &[_][]const u8{};
             };
 
-            var names = std.ArrayList([]const u8).init(a);
+            var names: std.ArrayList([]const u8) = .empty;
             var it = std.mem.splitScalar(u8, error_names, ':');
             while (it.next()) |unescaped_name| {
                 // Zig error names are escaped here in URI-formatting. Unescape them so we can use them.
                 const name = try a.alloc(u8, unescaped_name.len);
-                try names.append(std.Uri.percentDecodeBackwards(name, unescaped_name));
+                try names.append(a, std.Uri.percentDecodeBackwards(name, unescaped_name));
             }
             break :blk names.items;
         };
 
         const module_type = maybe_module_type orelse fail("kernel has no OpCapability Kernel and no OpCapability Shader", .{});
-        try validate(a, module, module_type);
+        try validate(io, a, module, module_type);
 
         return .{
             .words = module,
@@ -343,7 +342,7 @@ const Module = struct {
             null;
     }
 
-    fn validate(a: Allocator, module: []u32, module_type: ModuleType) !void {
+    fn validate(io: std.Io, a: Allocator, module: []u32, module_type: ModuleType) !void {
         const target_env: c_uint = switch (module_type) {
             .shader => c.SPV_ENV_VULKAN_1_3,
             .kernel => c.SPV_ENV_OPENCL_2_2,
@@ -436,7 +435,7 @@ const Module = struct {
             if (maybe_source_file) |file| {
                 std.log.err("at {s}:{}:{}", .{ file, pos.line, pos.column });
 
-                try dumpSourceLine(a, file, pos.line, pos.column);
+                try dumpSourceLine(io, a, file, pos.line, pos.column);
             } else {
                 std.log.err("at <unknown>:{}:{}", .{ pos.line, pos.column });
             }
@@ -453,8 +452,8 @@ const Module = struct {
         std.process.exit(1);
     }
 
-    fn dumpSourceLine(a: Allocator, path: []const u8, line: u32, column: u32) !void {
-        const source = std.fs.cwd().readFileAlloc(a, path, std.math.maxInt(usize)) catch |err| {
+    fn dumpSourceLine(io: std.Io, a: Allocator, path: []const u8, line: u32, column: u32) !void {
+        const source = std.Io.Dir.cwd().readFileAlloc(io, path, a, .unlimited) catch |err| {
             std.log.debug("couldn't open source file: {s}", .{@errorName(err)});
             return;
         };
@@ -825,21 +824,21 @@ const Vulkan = struct {
         }
 
         const features10: vk.PhysicalDeviceFeatures = .{
-            .shader_int_16 = vk.TRUE,
-            .shader_int_64 = vk.TRUE,
-            .shader_float_64 = vk.TRUE,
+            .shader_int_16 = .true,
+            .shader_int_64 = .true,
+            .shader_float_64 = .true,
         };
 
         var features11: vk.PhysicalDeviceVulkan11Features = .{
-            .variable_pointers = vk.TRUE,
-            .variable_pointers_storage_buffer = vk.TRUE,
+            .variable_pointers = .true,
+            .variable_pointers_storage_buffer = .true,
         };
 
         var features12: vk.PhysicalDeviceVulkan12Features = .{
             .p_next = @ptrCast(&features11),
-            .buffer_device_address = vk.TRUE,
-            .shader_float_16 = vk.TRUE,
-            .shader_int_8 = vk.TRUE,
+            .buffer_device_address = .true,
+            .shader_float_16 = .true,
+            .shader_int_8 = .true,
         };
 
         for (pdevs) |pdev| {
@@ -967,13 +966,12 @@ const Vulkan = struct {
 
         self.err_ptr = @ptrCast(@alignCast(try self.dev.mapMemory(self.err_buf_mem, 0, @sizeOf(u32), .{})));
 
-        self.desc_pool = try vkd.createDescriptorPool(dev, &.{
+        self.desc_pool = try self.dev.createDescriptorPool(&.{
             .pool_size_count = @intCast(1),
             .p_pool_sizes = &.{.{ .type = .storage_buffer, .descriptor_count = 1 }},
             .max_sets = 1,
         }, null);
-        self.desc_set_layout = try vkd.createDescriptorSetLayout(
-            dev,
+        self.desc_set_layout = try self.dev.createDescriptorSetLayout(
             &.{
                 .binding_count = 1,
                 .p_bindings = &.{.{
@@ -985,8 +983,7 @@ const Vulkan = struct {
             },
             null,
         );
-        try vkd.allocateDescriptorSets(
-            dev,
+        try self.dev.allocateDescriptorSets(
             &.{
                 .descriptor_pool = self.desc_pool,
                 .descriptor_set_count = 1,
@@ -994,7 +991,7 @@ const Vulkan = struct {
             },
             @ptrCast(&self.desc_set),
         );
-        vkd.updateDescriptorSets(dev, 1, &.{
+        self.dev.updateDescriptorSets(&.{
             .{
                 .dst_set = self.desc_set,
                 .dst_binding = 0,
@@ -1009,7 +1006,7 @@ const Vulkan = struct {
                 .p_image_info = undefined,
                 .p_texel_buffer_view = undefined,
             },
-        }, 0, null);
+        }, null);
 
         const kernels_node = root_node.start("Compiling Kernels", module.entry_points.len);
         for (module.entry_points, 0..) |entry_point, i| {
@@ -1074,9 +1071,9 @@ const Vulkan = struct {
             .{ &expected_features10, &expected_features11, &expected_features12 },
             .{ features10, &features11, &features12 },
         ) |T, expected, actual| {
-            inline for (std.meta.fields(T)) |field| {
-                if (field.type == vk.Bool32 and @field(expected, field.name) == vk.TRUE and @field(actual, field.name) == vk.FALSE) {
-                    std.log.debug("device does not support {s}", .{field.name});
+            inline for (comptime std.meta.fieldNames(T)) |field_name| {
+                if (@FieldType(T, field_name) == vk.Bool32 and @field(expected, field_name) == .true and @field(actual, field_name) == .false) {
+                    std.log.debug("device does not support {s}", .{field_name});
                     return false;
                 }
             }
@@ -1094,7 +1091,6 @@ const Vulkan = struct {
         var pipelines: [1]vk.Pipeline = undefined;
         _ = try self.dev.createComputePipelines(
             .null_handle,
-            1,
             &.{
                 .{
                     .stage = .{
@@ -1167,16 +1163,14 @@ const Vulkan = struct {
             .compute,
             kernel.pipeline_layout,
             0,
-            1,
             &.{self.desc_set},
-            0,
             null,
         );
         self.dev.cmdDispatch(self.cmd_buf, 1, 1, 1);
         self.dev.cmdWriteTimestamp(self.cmd_buf, .{ .compute_shader_bit = true }, self.query_pool, 1);
 
         try self.dev.endCommandBuffer(self.cmd_buf);
-        try self.dev.queueSubmit(self.compute_queue, 1, &.{
+        try self.dev.queueSubmit(self.compute_queue, &.{
             .{
                 .command_buffer_count = 1,
                 .p_command_buffers = &.{self.cmd_buf},
@@ -1209,9 +1203,9 @@ const Vulkan = struct {
     }
 };
 
-fn runTests(api: anytype, module: Module, root_node: std.Progress.Node) !bool {
+fn runTests(io: std.Io, api: anytype, module: Module, root_node: std.Progress.Node) !bool {
     const test_root_node = root_node.start("Test", module.entry_points.len);
-    const have_tty = std.fs.File.stderr().isTty();
+    const have_tty = try std.Io.File.stderr().isTty(io);
 
     var ok_count: usize = 0;
     var fail_count: usize = 0;
@@ -1265,17 +1259,15 @@ fn runTests(api: anytype, module: Module, root_node: std.Progress.Node) !bool {
     return fail_count != 0;
 }
 
-pub fn main() !u8 {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
+pub fn main(init: std.process.Init) !u8 {
+    const a = init.arena.allocator();
 
-    const options = try parseArgs(a);
+    const options = try parseArgs(init);
     if (options.verbose) {
         log_verbose = true;
     }
 
-    const module = try Module.load(a, options.module);
+    const module = try Module.load(init.io, a, options.module);
     std.log.debug("module type {s}", .{@tagName(module.module_type)});
     std.log.debug("module has {} entry point(s)", .{module.entry_points.len});
     std.log.debug("module has {} error code(s)", .{module.error_names.len});
@@ -1285,7 +1277,7 @@ pub fn main() !u8 {
         return 0;
     }
 
-    const root_node = std.Progress.start(.{
+    const root_node = std.Progress.start(init.io, .{
         .estimated_total_items = 2,
     });
 
@@ -1294,13 +1286,13 @@ pub fn main() !u8 {
             std.log.debug("running module under opencl", .{});
             var opencl = try OpenCL.init(a, module, options, root_node);
             defer opencl.deinit();
-            break :blk try runTests(&opencl, module, root_node);
+            break :blk try runTests(init.io, &opencl, module, root_node);
         },
         .shader => blk: {
             std.log.debug("running module under vulkan", .{});
             var vulkan = try Vulkan.init(a, module, options, root_node);
             defer vulkan.deinit();
-            break :blk try runTests(&vulkan, module, root_node);
+            break :blk try runTests(init.io, &vulkan, module, root_node);
         },
     };
 

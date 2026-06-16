@@ -2,15 +2,15 @@
     .name = .zig_spirv_test_executor,
     .fingerprint = 0xb63e0083c7fb96c7,
     .version = "0.1.0",
-    .minimum_zig_version = "0.15.0-dev.1160+e43617e68",
+    .minimum_zig_version = "0.17.0-dev.857+2b2b85c5f",
     .dependencies = .{
         .opencl = .{
-            .url = "https://github.com/Snektron/opencl-zig/archive/86e1eb15c60b85c9d57bd71ff9fa62d4006a85e5.tar.gz",
-            .hash = "opencl-0.1.0-W4Df3cmSAAA77y0UNCWbx_0BGB62alV4-QIhoX1JGZ_z",
+            .url = "https://github.com/Snektron/opencl-zig/archive/daa3a65b0e342b30460d136982503de975401841.tar.gz",
+            .hash = "opencl-0.1.0-W4Df3T2pNADIuy4qaFJPneWCDecwqOZJRmM1Zflxj16I",
         },
         .vulkan_zig = .{
-            .url = "https://github.com/Snektron/vulkan-zig/archive/e492b17810d775986e2eefd751f5526d9c3b2618.tar.gz",
-            .hash = "vulkan-0.0.0-r7Ytx5w-AwB0hzckD1mPHma0VgtiJ2DHj5dvgzWVwk2e",
+            .url = "https://github.com/Snektron/vulkan-zig/archive/241d88f280ccf156cafd5008934e016081cbe2a2.tar.gz",
+            .hash = "vulkan-0.0.0-r7Ytx8t9AwDbdPvKCQU2qrevpeTvH9v4E9iSrnA46zZU",
         },
         .vulkan_headers = .{
             .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/v1.4.309.tar.gz",
