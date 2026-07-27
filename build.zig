@@ -4,18 +4,15 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const opencl = b.dependency("opencl", .{
-        .target = target,
-        .optimize = optimize,
-    }).module("opencl");
+    const spirv_tools_dep = b.dependency("spirv_tools", .{ .target = target, .optimize = optimize });
+    const opencl = b.dependency("opencl", .{ .target = target, .optimize = optimize }).module("opencl");
 
     const vulkan = b.dependency("vulkan_zig", .{
         .registry = b.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
     }).module("vulkan-zig");
 
-    // TODO: replace this with translate-c directly going forward.
     const spirv_tools = b.addTranslateC(.{
-        .root_source_file = b.path("src/spirv_tools.h"),
+        .root_source_file = spirv_tools_dep.path("include/spirv-tools/libspirv.h"),
         .target = target,
         .optimize = optimize,
     }).createModule();
