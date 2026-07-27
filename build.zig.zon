@@ -8,13 +8,17 @@
             .url = "https://github.com/Snektron/opencl-zig/archive/daa3a65b0e342b30460d136982503de975401841.tar.gz",
             .hash = "opencl-0.1.0-W4Df3T2pNADIuy4qaFJPneWCDecwqOZJRmM1Zflxj16I",
         },
-        .vulkan_zig = .{
-            .url = "https://github.com/Snektron/vulkan-zig/archive/241d88f280ccf156cafd5008934e016081cbe2a2.tar.gz",
-            .hash = "vulkan-0.0.0-r7Ytx8t9AwDbdPvKCQU2qrevpeTvH9v4E9iSrnA46zZU",
-        },
         .vulkan_headers = .{
-            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/v1.4.309.tar.gz",
-            .hash = "N-V-__8AAPzz4AHlh4uxSRPYF16YYiktAY5ZbN3H69vXPDIC",
+            .url = "git+https://github.com/KhronosGroup/Vulkan-Headers#595c8d4794410a4e64b98dc58d27c0310d7ea2fd",
+            .hash = "N-V-__8AAD79oQHbpYgYjF37obKUeFsO02CtHqLmm_fAdhac",
+        },
+        .vulkan_zig = .{
+            .url = "git+https://github.com/Snektron/vulkan-zig#057180744c666bb62e20877fe106422784a5e29a",
+            .hash = "vulkan-0.0.0-r7Ytx_6DAwDB1QJAbIew5IzR2PiiAtJENX5kdJHf449X",
+        },
+        .spirv_tools = .{
+            .url = "https://github.com/KhronosGroup/SPIRV-Tools/archive/12a6f05b92753f1cbbbc9e13612adc4c7b1c0c72.tar.gz",
+            .hash = "N-V-__8AAAV5kAEA4tibrf8NcparAlJ0WE8UeWqd8zcL8Ctx",
         },
     },
     .paths = .{""},

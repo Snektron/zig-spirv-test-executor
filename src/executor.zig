@@ -52,12 +52,13 @@ pub fn log(
     args: anytype,
 ) void {
     _ = scope;
+    var writer = std.Io.File.writer(.stdout(), std.Options.debug_io, &.{});
     if (@intFromEnum(level) <= @intFromEnum(std.log.Level.info) or log_verbose) {
         switch (level) {
-            .info => std.debug.print(format ++ "\n", args),
+            .info => writer.interface.print(format ++ "\n", args) catch {},
             else => {
                 const prefix = comptime level.asText();
-                std.debug.print(prefix ++ ": " ++ format ++ "\n", args);
+                writer.interface.print(prefix ++ ": " ++ format ++ "\n", args) catch {};
             },
         }
     }
@@ -620,6 +621,34 @@ pub const OpenCL = struct {
         return .{ result, stop - start };
     }
 
+    fn listAvailableTargets(a: Allocator) void {
+        const available_platforms = cl.getPlatforms(a) catch return;
+        std.log.info("available opencl platforms and devices:", .{});
+        for (available_platforms) |platform| {
+            const platform_name = platform.getName(a) catch "<unknown>";
+            std.log.info("  platform '{s}'", .{platform_name});
+            const devices = platform.getDevices(a, cl.DeviceType.all) catch continue;
+            if (devices.len == 0) {
+                std.log.info("    (no devices)", .{});
+                continue;
+            }
+            for (devices) |device| {
+                const device_name = device.getName(a) catch "<unknown>";
+                const supports_spirv = deviceSupportsSpirv(a, device) catch false;
+                std.log.info("    device '{s}'{s}", .{
+                    device_name,
+                    if (supports_spirv) "" else " (no SPIR-V ingestion)",
+                });
+            }
+        }
+    }
+
+    fn failWithAvailableTargets(a: Allocator, comptime fmt: []const u8, args: anytype) noreturn {
+        std.log.err(fmt, args);
+        listAvailableTargets(a);
+        std.process.exit(1);
+    }
+
     fn pickDevice(a: Allocator, platform: cl.Platform, query: ?[]const u8) !cl.Device {
         const available_devices = try platform.getDevices(a, cl.DeviceType.all);
         if (available_devices.len == 0) {
@@ -631,7 +660,7 @@ pub const OpenCL = struct {
                 const name = try device.getName(a);
                 if (std.mem.indexOf(u8, name, device_query) != null) {
                     if (!try deviceSupportsSpirv(a, device)) {
-                        fail("device '{s}' does not support spir-v ingestion", .{name});
+                        failWithAvailableTargets(a, "device '{s}' does not support spir-v ingestion", .{name});
                     }
                     return device;
                 }
@@ -667,13 +696,13 @@ pub const OpenCL = struct {
                     break .{ platform, name };
                 }
             } else {
-                fail("no such opencl platform '{s}'", .{platform_query});
+                failWithAvailableTargets(a, "no such opencl platform '{s}'", .{platform_query});
             };
 
             const device = pickDevice(a, platform, options.device) catch |err| switch (err) {
-                error.NoDevices => fail("no opencl devices available for platform '{s}'", .{name}),
-                error.NoSuchDevice => fail("platform '{s}' has no devices that match '{s}'", .{ name, options.device.? }),
-                error.NoSpirvSupport => fail("platform '{s}' has no devices that support SPIR-V ingestion", .{name}),
+                error.NoDevices => failWithAvailableTargets(a, "no opencl devices available for platform '{s}'", .{name}),
+                error.NoSuchDevice => failWithAvailableTargets(a, "platform '{s}' has no devices that match '{s}'", .{ name, options.device.? }),
+                error.NoSpirvSupport => failWithAvailableTargets(a, "platform '{s}' has no devices that support SPIR-V ingestion", .{name}),
                 else => return err,
             };
             return .{ platform, device };
@@ -697,9 +726,9 @@ pub const OpenCL = struct {
 
             if (device_found_but_doesnt_have_spirv) |platform| {
                 const name = try platform.getName(a);
-                fail("platform '{s}' has a device that matches '{s}', but it doesn't support SPIR-V ingestion", .{ name, device_query });
+                failWithAvailableTargets(a, "platform '{s}' has a device that matches '{s}', but it doesn't support SPIR-V ingestion", .{ name, device_query });
             } else {
-                fail("no platform has opencl device '{s}'", .{device_query});
+                failWithAvailableTargets(a, "no platform has opencl device '{s}'", .{device_query});
             }
         } else {
             for (available_platforms) |platform| {
@@ -710,28 +739,47 @@ pub const OpenCL = struct {
                 };
                 return .{ platform, device };
             } else {
-                fail("no opencl platform that has any devices which support SPIR-V ingestion", .{});
+                failWithAvailableTargets(a, "no opencl platform that has any devices which support SPIR-V ingestion", .{});
             }
         }
     }
 
     fn deviceSupportsSpirv(a: Allocator, device: cl.Device) !bool {
-        // TODO: Check for OpenCL 3.0 before accessing this function?
-        const ils = try device.getILsWithVersion(a);
+        // CL_DEVICE_ILS_WITH_VERSION only exists on OpenCL 3.0+ drivers. older ones
+        // return CL_INVALID_VALUE, which the opencl bindings treat as unreachable.
+        // Probe it manually so we can fall back to the OpenCL 2.1 query.
+        var ils_size: usize = 0;
+        if (cl.c.clGetDeviceInfo(device.id, cl.c.CL_DEVICE_ILS_WITH_VERSION, 0, null, &ils_size) == cl.c.CL_SUCCESS) {
+            const ils = try device.getILsWithVersion(a);
 
-        for (ils) |il| {
-            // TODO: Minimum version?
-            if (std.mem.eql(u8, il.getName(), "SPIR-V")) {
-                std.log.debug("Support for SPIR-V version {}.{}.{} detected", .{
-                    il.version.major,
-                    il.version.minor,
-                    il.version.patch,
-                });
-                return true;
+            for (ils) |il| {
+                // TODO: Minimum version?
+                if (std.mem.eql(u8, il.getName(), "SPIR-V")) {
+                    std.log.debug("Support for SPIR-V version {}.{}.{} detected", .{
+                        il.version.major,
+                        il.version.minor,
+                        il.version.patch,
+                    });
+                    return true;
+                }
             }
+
+            return false;
         }
 
-        return false;
+        var il_version_size: usize = 0;
+        if (cl.c.clGetDeviceInfo(device.id, cl.c.CL_DEVICE_IL_VERSION, 0, null, &il_version_size) != cl.c.CL_SUCCESS or il_version_size == 0) {
+            return false;
+        }
+
+        const il_version = try a.alloc(u8, il_version_size);
+        defer a.free(il_version);
+        if (cl.c.clGetDeviceInfo(device.id, cl.c.CL_DEVICE_IL_VERSION, il_version.len, il_version.ptr, null) != cl.c.CL_SUCCESS) {
+            return false;
+        }
+
+        std.log.debug("Support for IL version(s) '{s}' detected", .{std.mem.sliceTo(il_version, 0)});
+        return std.mem.indexOf(u8, il_version, "SPIR-V") != null;
     }
 };
 
@@ -783,6 +831,27 @@ const Vulkan = struct {
     desc_set: vk.DescriptorSet,
 
     query_pool: vk.QueryPool,
+
+    fn listAvailableDevices(instance: Instance, pdevs: []const vk.PhysicalDevice) void {
+        std.log.info("available vulkan devices:", .{});
+        for (pdevs) |pdev| {
+            var props12: vk.PhysicalDeviceVulkan12Properties = undefined;
+            props12.s_type = .physical_device_vulkan_1_2_properties;
+            props12.p_next = null;
+
+            var props2: vk.PhysicalDeviceProperties2 = .{
+                .p_next = @ptrCast(&props12),
+                .properties = undefined,
+            };
+
+            instance.getPhysicalDeviceProperties2(pdev, &props2);
+
+            std.log.info("  device '{s}' (driver '{s}')", .{
+                std.mem.sliceTo(&props2.properties.device_name, 0),
+                std.mem.sliceTo(&props12.driver_name, 0),
+            });
+        }
+    }
 
     fn init(a: Allocator, module: Module, options: Options, root_node: std.Progress.Node) !Vulkan {
         const init_node = root_node.start("Initialize Vulkan", 1);
@@ -876,7 +945,9 @@ const Vulkan = struct {
             self.props = props2.properties;
             break;
         } else {
-            fail("there are no devices that support buffer device address or the specified device/platform", .{});
+            std.log.err("there are no devices that support buffer device address or the specified device/platform", .{});
+            listAvailableDevices(self.instance, pdevs);
+            std.process.exit(1);
         }
 
         self.mem_props = self.instance.getPhysicalDeviceMemoryProperties(self.pdev);
@@ -885,7 +956,7 @@ const Vulkan = struct {
 
         const families = try self.instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pdev, a);
         for (families, 0..) |props, i| {
-            if (props.queue_flags.compute_bit) {
+            if (props.queue_flags.compute) {
                 self.compute_queue_family = @intCast(i);
                 self.compute_queue_props = props;
                 break;
@@ -948,8 +1019,8 @@ const Vulkan = struct {
         self.err_buf = try self.dev.createBuffer(&.{
             .size = @sizeOf(u32),
             .usage = .{
-                .transfer_dst_bit = true,
-                .storage_buffer_bit = true,
+                .transfer_dst = true,
+                .storage_buffer = true,
             },
             .sharing_mode = .exclusive,
         }, null);
@@ -957,9 +1028,9 @@ const Vulkan = struct {
 
         const mem_reqs = self.dev.getBufferMemoryRequirements(self.err_buf);
         self.err_buf_mem = try self.allocate(mem_reqs, .{
-            .host_visible_bit = true,
-            .host_coherent_bit = true,
-            .device_local_bit = true,
+            .host_visible = true,
+            .host_coherent = true,
+            .device_local = true,
         }, true);
         errdefer self.dev.freeMemory(self.err_buf_mem, null);
         try self.dev.bindBufferMemory(self.err_buf, self.err_buf_mem, 0);
@@ -978,7 +1049,7 @@ const Vulkan = struct {
                     .binding = 0,
                     .descriptor_type = .storage_buffer,
                     .descriptor_count = 1,
-                    .stage_flags = .{ .compute_bit = true },
+                    .stage_flags = .{ .compute = true },
                 }},
             },
             null,
@@ -1094,7 +1165,7 @@ const Vulkan = struct {
             &.{
                 .{
                     .stage = .{
-                        .stage = .{ .compute_bit = true },
+                        .stage = .{ .compute = true },
                         .module = shader,
                         .p_name = name,
                     },
@@ -1127,7 +1198,7 @@ const Vulkan = struct {
     pub fn allocate(self: *Vulkan, requirements: vk.MemoryRequirements, flags: vk.MemoryPropertyFlags, allocate_device_address: bool) !vk.DeviceMemory {
         const allocate_flags_info: vk.MemoryAllocateFlagsInfo = .{
             .flags = .{
-                .device_address_bit = true,
+                .device_address = true,
             },
             .device_mask = 0x0,
         };
@@ -1151,12 +1222,12 @@ const Vulkan = struct {
 
         try self.dev.resetCommandPool(self.cmd_pool, .{});
         try self.dev.beginCommandBuffer(self.cmd_buf, &.{
-            .flags = .{ .one_time_submit_bit = true },
+            .flags = .{ .one_time_submit = true },
         });
 
         self.dev.cmdResetQueryPool(self.cmd_buf, self.query_pool, 0, 2);
 
-        self.dev.cmdWriteTimestamp(self.cmd_buf, .{ .compute_shader_bit = true }, self.query_pool, 0);
+        self.dev.cmdWriteTimestamp(self.cmd_buf, .{ .compute_shader = true }, self.query_pool, 0);
         self.dev.cmdBindPipeline(self.cmd_buf, .compute, kernel.pipeline);
         self.dev.cmdBindDescriptorSets(
             self.cmd_buf,
@@ -1167,7 +1238,7 @@ const Vulkan = struct {
             null,
         );
         self.dev.cmdDispatch(self.cmd_buf, 1, 1, 1);
-        self.dev.cmdWriteTimestamp(self.cmd_buf, .{ .compute_shader_bit = true }, self.query_pool, 1);
+        self.dev.cmdWriteTimestamp(self.cmd_buf, .{ .compute_shader = true }, self.query_pool, 1);
 
         try self.dev.endCommandBuffer(self.cmd_buf);
         try self.dev.queueSubmit(self.compute_queue, &.{
@@ -1187,7 +1258,7 @@ const Vulkan = struct {
             @sizeOf([2]u64),
             &query_results,
             @sizeOf(u64),
-            .{ .@"64_bit" = true },
+            .{ .@"64" = true },
         );
 
         if (self.compute_queue_props.timestamp_valid_bits != 64) {
@@ -1280,6 +1351,7 @@ pub fn main(init: std.process.Init) !u8 {
     const root_node = std.Progress.start(init.io, .{
         .estimated_total_items = 2,
     });
+    defer root_node.end();
 
     const has_fails = switch (module.module_type) {
         .kernel => blk: {
