@@ -1,17 +1,8 @@
 # Zig SPIR-V Test Executor
 
-This is a program to run Zig tests for the SPIR-V target. This is currently mainly used for the compiler behavior tests, and only supports the OpenCL environment. A SPIR-V-capable OpenCL implementation is required, such as Rusticl, POCL, or Intels
+This is a program to run Zig tests for the SPIR-V target. This is currently mainly used for the compiler behavior tests, and only supports the Vulkan and OpenCL environment.
 
-Requires Zig `0.17.0-dev.857+2b2b85c5f` or newer.
-
-## Building
-
-In order to build the executor, we need a few system dependencies:
-- The [OpenCL Headers](https://github.com/KhronosGroup/OpenCL-Headers)
-- An OpenCL implementation. Its usually the best to link against an ICD loader so that the actual backend that is used may be swapped out at runtime, such as the [Khronos OpenCL ICD Loader](https://github.com/KhronosGroup/OpenCL-ICD-Loader).
-- [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools) is required for extra validation of the module.
-
-After obtaining these dependencies, simply run `zig build` to build the project.
+Requires Zig `0.18.0-dev.131+41f885830` or newer.
 
 ## Running tests
 
@@ -19,8 +10,8 @@ To actually run tests, use something like the following:
 ```
 $ zig test src/test_kernel.zig \
     --test-runner src/test_runner.zig \
-    -target spirv64-opencl-none \
-    -mcpu generic+int64+float64+float16 \
+    -target spirv64-vulkan \
+    -mcpu vulkan_v1_2+int64+float64+float16 \
     -fno-llvm \
     --test-cmd zig-out/bin/zig-spirv-test-executor \
     --test-cmd --platform \

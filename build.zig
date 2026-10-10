@@ -5,6 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const spirv_tools_dep = b.dependency("spirv_tools", .{ .target = target, .optimize = optimize });
+    const spirv_headers = b.dependency("spirv_headers", .{});
     const opencl = b.dependency("opencl", .{ .target = target, .optimize = optimize }).module("opencl");
 
     const vulkan = b.dependency("vulkan_zig", .{
@@ -17,10 +18,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).createModule();
 
+    const spirv = b.addTranslateC(.{
+        .root_source_file = spirv_headers.path("include/spirv/unified1/spirv.h"),
+        .target = target,
+        .optimize = optimize,
+    }).createModule();
+
     const exe = b.addExecutable(.{
         .name = "zig-spirv-test-executor",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/executor.zig"),
+            .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -28,6 +35,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "opencl", .module = opencl },
                 .{ .name = "vulkan", .module = vulkan },
                 .{ .name = "spirv-tools", .module = spirv_tools },
+                .{ .name = "spirv", .module = spirv },
             },
         }),
     });
@@ -36,6 +44,7 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
@@ -48,19 +57,22 @@ pub fn build(b: *std.Build) void {
                 .cpu_arch = .spirv64,
                 .os_tag = .opencl,
                 .abi = .none,
+                .cpu_model = .{ .explicit = &std.Target.spirv.cpu.opencl_v2 },
                 .cpu_features_add = std.Target.spirv.featureSet(&.{
                     .int64,
                     .float64,
-                    .float16,
                     .generic_pointer,
                 }),
             }),
             .optimize = optimize,
         }),
         .use_llvm = false,
+        .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
     });
 
-    const run_test = b.addRunArtifact(test_kernel);
+    const run_test = b.addRunArtifact(exe);
+    run_test.addFileArg(test_kernel.getEmittedBin());
+    run_test.addPassthruArgs();
 
     const test_step = b.step("test", "Run the test kernel");
     test_step.dependOn(&run_test.step);

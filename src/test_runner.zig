@@ -1,4 +1,3 @@
-const std = @import("std");
 const builtin = @import("builtin");
 
 // The testing infrastructure uses function pointers to expose the tests via

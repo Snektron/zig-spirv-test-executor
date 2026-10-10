@@ -1,24 +1,28 @@
 .{
     .name = .zig_spirv_test_executor,
     .fingerprint = 0xb63e0083c7fb96c7,
-    .version = "0.1.0",
-    .minimum_zig_version = "0.17.0-dev.857+2b2b85c5f",
+    .version = "0.2.0",
+    .minimum_zig_version = "0.18.0-dev.131+41f885830",
     .dependencies = .{
         .opencl = .{
             .url = "https://github.com/Snektron/opencl-zig/archive/daa3a65b0e342b30460d136982503de975401841.tar.gz",
             .hash = "opencl-0.1.0-W4Df3T2pNADIuy4qaFJPneWCDecwqOZJRmM1Zflxj16I",
         },
-        .vulkan_headers = .{
-            .url = "git+https://github.com/KhronosGroup/Vulkan-Headers#595c8d4794410a4e64b98dc58d27c0310d7ea2fd",
-            .hash = "N-V-__8AAD79oQHbpYgYjF37obKUeFsO02CtHqLmm_fAdhac",
-        },
         .vulkan_zig = .{
             .url = "git+https://github.com/Snektron/vulkan-zig#057180744c666bb62e20877fe106422784a5e29a",
             .hash = "vulkan-0.0.0-r7Ytx_6DAwDB1QJAbIew5IzR2PiiAtJENX5kdJHf449X",
         },
+        .vulkan_headers = .{
+            .url = "git+https://github.com/KhronosGroup/Vulkan-Headers#595c8d4794410a4e64b98dc58d27c0310d7ea2fd",
+            .hash = "N-V-__8AAD79oQHbpYgYjF37obKUeFsO02CtHqLmm_fAdhac",
+        },
+        .spirv_headers = .{
+            .url = "git+https://github.com/KhronosGroup/SPIRV-Headers#vulkan-sdk-1.4.363.0",
+            .hash = "N-V-__8AAGbTPwCpO5RqFsSkao-YQrp4sYtjDvquqfjmh9pW",
+        },
         .spirv_tools = .{
-            .url = "https://github.com/KhronosGroup/SPIRV-Tools/archive/12a6f05b92753f1cbbbc9e13612adc4c7b1c0c72.tar.gz",
-            .hash = "N-V-__8AAAV5kAEA4tibrf8NcparAlJ0WE8UeWqd8zcL8Ctx",
+            .url = "git+https://github.com/KhronosGroup/SPIRV-Tools#vulkan-sdk-1.4.363.0",
+            .hash = "N-V-__8AAJchlwH1qcBdsMbVmaIHJzBaNoJi0UqKXq1Ah8A3",
         },
     },
     .paths = .{""},
